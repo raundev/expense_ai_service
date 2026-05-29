@@ -1,0 +1,22 @@
+# --- Web / API ---
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# --- AI Orchestration ---
+langchain
+langchain-openai
+langgraph
+
+# --- RAG / Vector Search ---
+llama-index
+qdrant-client
+
+# --- Database (RDB) ---
+sqlalchemy
+psycopg2-binary
+alembic
+
+# --- Config ---
+python-dotenv

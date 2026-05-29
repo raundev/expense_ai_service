@@ -1,0 +1,33 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: expense_ai_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: expense_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d expense_ai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: expense_ai_qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"  # REST / HTTP API
+      - "6334:6334"  # gRPC API
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+# 컨테이너가 꺼지거나 삭제되어도 데이터가 유지되도록 named volume 사용
+volumes:
+  postgres_data:
+  qdrant_data:

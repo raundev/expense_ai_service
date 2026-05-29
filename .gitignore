@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# IDE
+.idea/
+
+# SQLite DB
+*.db
+
+# Generated context files
+code_context_for_gemini.txt
