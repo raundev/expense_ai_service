@@ -12,6 +12,7 @@ langgraph
 # --- RAG / Vector Search ---
 llama-index
 qdrant-client
+langchain-qdrant
 
 # --- Database (RDB) ---
 sqlalchemy
