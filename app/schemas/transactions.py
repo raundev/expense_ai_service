@@ -21,6 +21,9 @@ class SingleTransactionTestRequest(BaseModel):
     merchant_name: str = Field(..., description="가맹점명")
     merchant_sector_code: str | None = Field(default=None, description="가맹점 업종 코드")
     amount: int = Field(..., description="금액(원)")
+    department: str | None = Field(
+        default=None, description="사용자 주부서(전달 시 영수증에 함께 영속화, PRD 5/7)"
+    )
 
 
 class ComplianceFields(BaseModel):
@@ -31,6 +34,8 @@ class ComplianceFields(BaseModel):
     나머지 소명 추적 필드는 이후 소명 워크플로우 단계에서 채워진다.
     """
 
+    # 감사 그리드/차트/엑셀에서 노출되는 사용자 조직 컨텍스트 (14단계, PRD 5/7).
+    department: str | None = Field(default=None, description="사용자 주부서")
     is_compliant: bool = Field(default=True, description="사칙 위배 여부 (위배 시 False)")
     violation_reason: str | None = Field(default=None, description="위반 사유 (준수 시 None)")
     explanation_status: str | None = Field(

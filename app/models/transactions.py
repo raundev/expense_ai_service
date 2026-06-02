@@ -54,6 +54,9 @@ class ReceiptTransaction(Base):
     company_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     workplace_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
 
+    # --- 사용자 조직 정보 (14단계, PRD 5/7: 부서별 집계·필터·엑셀 컬럼용) ---
+    department: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+
     # --- 영수증 원본 ---
     receipt_date: Mapped[date] = mapped_column(Date, nullable=False)
     receipt_time: Mapped[str] = mapped_column(String(8), nullable=False)
