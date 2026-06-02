@@ -111,7 +111,9 @@ class ReceiptLLMRecommender:
         # 회사 SSL 인터셉션을 통과시킨다.
         ssl_cert = os.environ.get("SSL_CERT_FILE")
         if ssl_cert and os.path.isfile(ssl_cert):
-            llm_kwargs["http_client"] = httpx.Client(verify=ssl_cert, timeout=30.0)
+            llm_kwargs["http_client"] = httpx.Client(
+                verify=ssl_cert, timeout=settings.llm_http_timeout
+            )
             logger.info("Custom http_client 주입 (SSL CA: %s)", ssl_cert)
 
         llm = ChatOpenAI(**llm_kwargs)

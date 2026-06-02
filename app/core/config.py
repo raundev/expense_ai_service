@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     OPENAI_API_BASE: str = "https://api.runpod.ai/v2/v7fykeg2rhwgse/openai/v1"
     LLM_MODEL: str = "gpt-4o-mini"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # 임베딩 공급자: "openai"(OpenAI 호환 API) 또는 "fastembed"(로컬 ONNX, API/네트워크 불필요).
+    # fastembed 사용 시 EMBEDDING_MODEL 은 FastEmbed 지원 모델명으로 설정한다
+    #   (예: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 — 한국어 지원, 384차원).
+    EMBEDDING_PROVIDER: str = "openai"
 
     # --- CORS ---
     # 콤마(,)로 구분된 오리진 목록. "*"은 전체 허용.
@@ -70,6 +74,16 @@ class Settings(BaseSettings):
     @property
     def is_sqlite(self) -> bool:
         return self.sqlalchemy_database_uri.startswith("sqlite")
+
+    @property
+    def llm_http_timeout(self) -> float:
+        """Chat LLM 호출 HTTP 타임아웃(초).
+
+        Qwen(RunPod vLLM, 예: Qwen/Qwen2.5-14B-Instruct-AWQ)은 대형 모델이라 응답이
+        최대 ~2분 30초까지 걸리므로 150초를 허용한다. 그 외 모델(클라우드 GPT 등)은 60초.
+        (임베딩 호출에는 적용하지 않는다.)
+        """
+        return 150.0 if self.LLM_MODEL.startswith("Qwen") else 60.0
 
 
 @lru_cache

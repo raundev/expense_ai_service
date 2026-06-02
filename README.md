@@ -109,6 +109,27 @@ alembic upgrade head
 uvicorn app.main:app --reload
 ```
 
+### Docker 없이 로컬 테스트 (임베디드 Qdrant + FastEmbed 로컬 임베딩)
+별도 Qdrant 서버/설치나 임베딩 API 없이 **단일 프로세스**로 RAG·컴플라이언스까지 테스트할 수 있습니다.
+`.env` 를 아래처럼 설정하세요:
+```dotenv
+QDRANT_URL=path:./qdrant_local        # 임베디드 Qdrant(로컬 폴더 영속, 서버 불필요). :memory: 도 가능
+EMBEDDING_PROVIDER=fastembed          # 로컬 ONNX 임베딩(임베딩 API 불필요)
+EMBEDDING_MODEL=sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2   # 한국어 지원, 384d
+LLM_MODEL=Qwen/Qwen2.5-14B-Instruct-AWQ   # 챗/위반 판정은 RunPod Qwen 사용
+```
+- `requirements.txt` 에 포함된 `fastembed` 가 설치돼 있어야 하며, 임베딩 모델은 **최초 1회 다운로드** 후 오프라인 로드됩니다.
+- 임베디드 Qdrant 는 폴더에 파일 락을 걸어 **한 번에 한 프로세스**만 엽니다(`uvicorn` 단일 워커면 무방).
+
+> **⚠️ 사내 SSL 인터셉션 환경**: `SSL_CERT_FILE` 이 사내 CA **단독**이면 FastEmbed 모델 다운로드(HuggingFace)의 공개 TLS 검증이 실패합니다(`CERTIFICATE_VERIFY_FAILED`). **공개 CA(certifi) + 사내 CA 결합 번들**을 만들어 가리키세요:
+> ```bash
+> python -c "import certifi; open('combined-ca.pem','w',encoding='utf-8').write(open(certifi.where(),encoding='utf-8').read()+'\n'+open('corp-ca.pem',encoding='utf-8').read())"
+> # .env:  SSL_CERT_FILE=<combined-ca.pem 절대경로>   REQUESTS_CA_BUNDLE=<동일>
+> ```
+> 모델이 캐시된 뒤에는 임베딩에 네트워크/SSL 이 필요 없습니다.
+
+**테스트 흐름**: 백엔드 기동 → 사칙 `ingest`(예: "접대비는 1회 100,000원을 초과할 수 없습니다.") → 한도 초과 영수증을 단건 추천에 입력 → `is_compliant=False` + 위반 사유 확인.
+
 ---
 
 ## ⚙️ 환경 변수 (`.env`)
@@ -117,11 +138,12 @@ uvicorn app.main:app --reload
 |------|---------------|------|
 | `OPENAI_API_KEY` | `rpa_...` | LLM/임베딩 API 키 |
 | `OPENAI_API_BASE` | RunPod vLLM 엔드포인트 | OpenAI 호환 base URL |
-| `LLM_MODEL` | `Qwen/Qwen2.5-14B-Instruct-AWQ` | 채팅/구조화 출력 모델 |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | 임베딩 모델 |
-| `QDRANT_URL` | `http://localhost:6333` | Qdrant 주소(컨테이너에선 `http://qdrant:6333`) |
-| `DB_URL` | `sqlite:///./expense_ai.db` | RDB 연결 문자열 |
-| `SSL_CERT_FILE` | (옵션) | 사내 CA 경로(SSL 인터셉션 통과용) |
+| `LLM_MODEL` | `Qwen/Qwen2.5-14B-Instruct-AWQ` | 채팅/구조화 출력 모델. Qwen 계열이면 HTTP 타임아웃 150초 적용 |
+| `EMBEDDING_PROVIDER` | `openai` \| `fastembed` | 임베딩 공급자. `fastembed` = 로컬 ONNX(임베딩 API 불필요) |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | 임베딩 모델 (fastembed 시: `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`) |
+| `QDRANT_URL` | `http://localhost:6333` | 서버 모드 주소(컨테이너 `http://qdrant:6333`). 임베디드: `path:./qdrant_local` / `:memory:` |
+| `DB_URL` | `sqlite:///./expense_ai.db` | RDB 연결 문자열 (운영은 `DATABASE_URL`=PostgreSQL 우선) |
+| `SSL_CERT_FILE` | (옵션) | 사내 CA 경로. 사내망에서 공개 TLS(HuggingFace 등)도 쓰려면 **공개+사내 결합 번들** 권장 |
 
 > `config.py` 는 `load_dotenv(override=True)` 로 **`.env` 를 단일 진실 공급원으로 강제**합니다(시스템 환경변수가 `.env` 를 가리는 드리프트 방지).
 
