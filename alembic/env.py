@@ -17,8 +17,9 @@ from app.models import Base  # noqa: E402
 # access to the values within the .ini file in use.
 config = context.config
 
-# settings.DB_URL 을 동적으로 주입 (alembic.ini 의 sqlalchemy.url 보다 우선 적용됨).
-config.set_main_option("sqlalchemy.url", settings.DB_URL)
+# 실제 DB URI(운영 DATABASE_URL 우선, 없으면 DB_URL)를 동적으로 주입
+# (alembic.ini 의 sqlalchemy.url 보다 우선). PostgreSQL/SQLite 모두 동일 경로로 동작.
+config.set_main_option("sqlalchemy.url", settings.sqlalchemy_database_uri)
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

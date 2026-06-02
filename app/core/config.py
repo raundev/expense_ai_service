@@ -25,8 +25,12 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_PREFIX: str = "/api"
 
-    # --- Relational Database (PostgreSQL) ---
-    DB_URL: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/expense_ai"
+    # --- Relational Database ---
+    # 로컬 개발 기본값(SQLite). 운영(PostgreSQL)에서는 DATABASE_URL 을 사용한다.
+    DB_URL: str = "sqlite:///./expense_ai.db"
+    # 운영용 표준 변수. 설정되면 DB_URL 보다 우선한다(SQLAlchemy 가 스킴으로 드라이버 자동 선택).
+    #   예) postgresql+psycopg2://user:pass@host:5432/expense_ai
+    DATABASE_URL: str | None = None
 
     # --- Vector Database (Qdrant) ---
     QDRANT_URL: str = "http://localhost:6333"
@@ -53,6 +57,19 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def sqlalchemy_database_uri(self) -> str:
+        """실제 사용할 DB 연결 URI. DATABASE_URL(운영) 우선, 없으면 DB_URL(로컬).
+
+        SQLAlchemy 는 URI 스킴(`postgresql+psycopg2://` / `sqlite://`)으로 드라이버를
+        자동 선택하므로, 운영 PostgreSQL 전환은 DATABASE_URL 지정만으로 충분하다.
+        """
+        return self.DATABASE_URL or self.DB_URL
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.sqlalchemy_database_uri.startswith("sqlite")
 
 
 @lru_cache

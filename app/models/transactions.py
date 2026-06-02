@@ -77,8 +77,10 @@ class ReceiptTransaction(Base):
 
     # --- 컴플라이언스(규정 준수) 감사 결과 (12단계, PRD 6.1) ---
     # is_compliant: 사칙 위배 여부. RAG 컴플라이언스 노드가 판정. 기본 True(준수).
+    # server_default 는 SQLite/PostgreSQL 양쪽에서 동작하도록 text("true") 사용
+    # (text("1") 은 PostgreSQL 의 boolean 컬럼 DEFAULT 로 거부됨).
     is_compliant: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=True, server_default=text("1")
+        Boolean, nullable=False, default=True, server_default=text("true")
     )
     # violation_reason: 위반 사유 (프롬프트 초안의 compliance_reason). 준수 시 NULL.
     violation_reason: Mapped[str | None] = mapped_column(String(1024), nullable=True)

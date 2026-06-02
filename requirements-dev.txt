@@ -1,0 +1,6 @@
+# 테스트 전용 의존성 (CI 에서 requirements.txt 와 함께 설치)
+-r requirements.txt
+
+pytest
+pytest-asyncio
+httpx          # FastAPI TestClient 백엔드
