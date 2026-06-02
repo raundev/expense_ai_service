@@ -1,0 +1,31 @@
+# --- 가상환경 / 캐시 (이미지 비대화 방지) ---
+.venv/
+venv/
+env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- 비밀/로컬 설정 (이미지에 굽지 않음) ---
+.env
+.env.example
+
+# --- 로컬 DB / 데이터 (컨테이너 볼륨에서 새로 생성) ---
+*.db
+*.sqlite3
+data/
+
+# --- VCS / IDE / 메타 ---
+.git/
+.gitignore
+.vscode/
+.idea/
+*.log
+
+# --- 컨테이너 산출물 자기 자신 ---
+Dockerfile
+.dockerignore
+docker-compose.yml
