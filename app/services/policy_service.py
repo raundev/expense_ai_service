@@ -1,16 +1,15 @@
-"""사내 규정 RAG 서비스 (11단계).
+"""사내 규정 RAG 서비스 (11단계 + 12단계 컴플라이언스).
 
-두 가지 책임:
+세 가지 책임:
     * ingest_policy_text : 규정 원문을 청크로 분할하고, 반드시 테넌트 식별자
       (company_id / workplace_id) 를 메타데이터에 주입하여 Qdrant 에 적재.
     * ask_policy         : 질문을 받아 **현재 테넌트와 일치하는 청크만**
       Payload Filter 로 검색하고, 그 문맥만 근거로 LLM 답변을 생성.
+    * check_compliance   : (12단계) 결제 1건이 현재 테넌트의 사칙에 위배되는지
+      RAG 로 판정. LangGraph 의 compliance_node 가 호출한다.
 
 멀티테넌트 격리의 책임은 전적으로 이 서비스의 Payload Filter 에 있다. 다른
 테넌트의 규정은 애초에 검색 결과로 나오지 않으므로 LLM 프롬프트에 유입되지 않는다.
-
-다음 12단계에서 이 `ask_policy` 엔진이 LangGraph 추천 파이프라인의
-'컴플라이언스 위반 검증 노드' 로 결합된다.
 """
 from __future__ import annotations
 
@@ -20,11 +19,13 @@ import os
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_qdrant import QdrantVectorStore
 from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pydantic import BaseModel, Field
 from qdrant_client import models
 
 from app.ai.vector_store import get_policy_vector_store
 from app.core.config import settings
 from app.core.dependencies import TenantContext
+from app.schemas.transactions import SingleTransactionTestRequest
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,31 @@ _HUMAN_TEMPLATE = """참고 문맥:
 질문: {question}
 
 위 '참고 문맥' 만 근거로 한국어로 간결하게 답변하세요."""
+
+# --- 컴플라이언스 판정용 프롬프트 (12단계) ---
+_COMPLIANCE_SYSTEM_PROMPT = """당신은 회사의 사내 규정 준수 여부를 판정하는 컴플라이언스 감사관입니다.
+반드시 아래 '참고 문맥'(사내 규정)에 적힌 내용만 근거로 판정하세요.
+- 결제가 사칙에 명백히 위배되면 is_compliant=False 로 하고, reason 에 위배 사유를
+  구체적으로(어떤 규정의 어떤 한도·조건을 어겼는지) 한국어로 적으세요.
+- 위배 근거가 문맥에 없거나 규정을 준수하면 is_compliant=True 로 하고 reason 은 비워 두세요."""
+
+_COMPLIANCE_HUMAN_TEMPLATE = """참고 문맥(사내 규정):
+{context}
+
+{question}"""
+
+
+class ComplianceResult(BaseModel):
+    """LLM 컴플라이언스 판정 정형 출력 (with_structured_output 대상)."""
+
+    is_compliant: bool = Field(
+        ...,
+        description="제공된 사칙 문맥에 비추어 결제가 규정을 준수하면 True, 위배되면 False",
+    )
+    reason: str = Field(
+        ...,
+        description="위배 사유. 위배가 아니면 빈 문자열.",
+    )
 
 
 def build_policy_llm():
@@ -85,10 +111,43 @@ class PolicyService:
         vector_store: QdrantVectorStore | None = None,
         llm=None,
     ) -> None:
-        self.vector_store = (
-            vector_store if vector_store is not None else get_policy_vector_store()
+        # I/O(임베딩 연결/컬렉션 보장)를 __init__ 에서 하지 않도록 lazy 초기화한다.
+        # 주입된 인스턴스가 있으면 그대로 쓰고, 없으면 첫 사용 시점에 운영 기본값을 만든다.
+        # -> TransactionService 가 PolicyService() 를 기본 생성해도 임베딩 서버에 즉시
+        #    연결하지 않으므로, 매칭 결과가 있어 실제 compliance 를 탈 때만 연결된다.
+        self._vector_store = vector_store
+        self._llm = llm
+
+    @property
+    def vector_store(self) -> QdrantVectorStore:
+        if self._vector_store is None:
+            self._vector_store = get_policy_vector_store()
+        return self._vector_store
+
+    @property
+    def llm(self):
+        if self._llm is None:
+            self._llm = build_policy_llm()
+        return self._llm
+
+    # ------------------------------------------------------------------ #
+    # Helpers
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _tenant_filter(tenant: TenantContext) -> models.Filter:
+        """현재 테넌트(company_id AND workplace_id)로 격리하는 Qdrant Payload Filter."""
+        return models.Filter(
+            must=[
+                models.FieldCondition(
+                    key="metadata.company_id",
+                    match=models.MatchValue(value=tenant.company_id),
+                ),
+                models.FieldCondition(
+                    key="metadata.workplace_id",
+                    match=models.MatchValue(value=tenant.workplace_id),
+                ),
+            ]
         )
-        self.llm = llm if llm is not None else build_policy_llm()
 
     # ------------------------------------------------------------------ #
     # Ingest
@@ -141,20 +200,9 @@ class PolicyService:
             2) 검색 결과가 없으면 LLM 호출 없이 '모른다' 고정 답변 반환(격리 보장).
             3) 있으면 그 문맥만 프롬프트에 넣어 ChatOpenAI 로 답변 생성.
         """
-        tenant_filter = models.Filter(
-            must=[
-                models.FieldCondition(
-                    key="metadata.company_id",
-                    match=models.MatchValue(value=tenant.company_id),
-                ),
-                models.FieldCondition(
-                    key="metadata.workplace_id",
-                    match=models.MatchValue(value=tenant.workplace_id),
-                ),
-            ]
+        docs = self.vector_store.similarity_search(
+            query, k=4, filter=self._tenant_filter(tenant)
         )
-
-        docs = self.vector_store.similarity_search(query, k=4, filter=tenant_filter)
         if not docs:
             logger.info(
                 "규정 검색 결과 없음: tenant=%s/%s query=%r",
@@ -174,3 +222,61 @@ class PolicyService:
         chain = prompt | self.llm
         response = chain.invoke({"context": context, "question": query})
         return response.content
+
+    # ------------------------------------------------------------------ #
+    # Compliance check (12단계)
+    # ------------------------------------------------------------------ #
+    def check_compliance(
+        self,
+        payload: SingleTransactionTestRequest,
+        category_name: str,
+        tenant: TenantContext,
+    ) -> dict:
+        """결제 1건이 현재 테넌트의 사칙에 위배되는지 RAG 로 판정한다.
+
+        흐름:
+            1) 11단계 격리 검색 로직 재활용 -- 현재 테넌트의 사칙 청크만 검색.
+            2) 검색 결과가 없으면 판단 근거가 없으므로 준수로 간주
+               -> {"is_compliant": True, "reason": None}.
+            3) 있으면 문맥을 프롬프트에 넣어 with_structured_output 으로
+               ComplianceResult 를 받아 dict 로 변환해 반환.
+
+        반환: {"is_compliant": bool, "reason": str | None}
+        """
+        docs = self.vector_store.similarity_search(
+            f"{category_name} 사용 한도 및 사칙 규정",
+            k=4,
+            filter=self._tenant_filter(tenant),
+        )
+        if not docs:
+            return {"is_compliant": True, "reason": None}
+
+        context = "\n\n".join(doc.page_content for doc in docs)
+        question = (
+            f"사용자가 {payload.merchant_name}에서 {payload.amount}원을 "
+            f"{category_name} 용도로 사용하려 합니다. 제공된 사칙 문맥에 비추어 "
+            f"보았을 때 이 결제가 사칙에 위배되나요?"
+        )
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", _COMPLIANCE_SYSTEM_PROMPT),
+                ("human", _COMPLIANCE_HUMAN_TEMPLATE),
+            ]
+        )
+        structured_llm = self.llm.with_structured_output(ComplianceResult)
+        result: ComplianceResult = (prompt | structured_llm).invoke(
+            {"context": context, "question": question}
+        )
+        logger.info(
+            "컴플라이언스 판정: tenant=%s/%s merchant=%s amount=%d category=%s -> compliant=%s",
+            tenant.company_id,
+            tenant.workplace_id,
+            payload.merchant_name,
+            payload.amount,
+            category_name,
+            result.is_compliant,
+        )
+        return {
+            "is_compliant": result.is_compliant,
+            "reason": result.reason if not result.is_compliant else None,
+        }

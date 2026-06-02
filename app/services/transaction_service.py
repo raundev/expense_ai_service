@@ -12,6 +12,7 @@ from app.schemas.transactions import (
     TransactionManualUpdateRequest,
     TransactionUploadSummaryResponse,
 )
+from app.services.policy_service import PolicyService
 from app.services.rule_service import RuleService
 
 
@@ -52,6 +53,7 @@ class TransactionService:
         self,
         db: Session,
         llm_recommender: ReceiptLLMRecommender | None = None,
+        policy_service: PolicyService | None = None,
     ) -> None:
         self.db = db
         self.rule_service = RuleService(db)
@@ -59,6 +61,11 @@ class TransactionService:
         # TODO: 매 요청 인스턴스화 비용 부담 시 모듈 싱글톤(lru_cache)으로 캐싱.
         self.llm_recommender = (
             llm_recommender if llm_recommender is not None else ReceiptLLMRecommender()
+        )
+        # 컴플라이언스 판정기(12단계). PolicyService 는 lazy 초기화라 기본 생성해도
+        # 임베딩 서버에 즉시 연결하지 않는다(실제 compliance 를 탈 때만 연결).
+        self.policy_service = (
+            policy_service if policy_service is not None else PolicyService()
         )
 
     def recommend_single_receipt(
@@ -79,6 +86,7 @@ class TransactionService:
                 "tenant": tenant,
                 "db_session": self.db,
                 "llm_recommender": self.llm_recommender,
+                "policy_service": self.policy_service,
             }
         )
         return RecommendResponse(
@@ -86,6 +94,10 @@ class TransactionService:
             result_category=final_state["result_category"],
             applied_rule_id=final_state.get("applied_rule_id"),
             match_type=final_state["match_type"],
+            # compliance 노드를 거치지 않은 경로(NONE)는 기본 준수(True)로 본다.
+            is_compliant=final_state.get("is_compliant", True),
+            violation_reason=final_state.get("violation_reason"),
+            explanation_status=final_state.get("explanation_status"),
         )
 
     # ------------------------------------------------------------------ #
@@ -139,6 +151,10 @@ class TransactionService:
                     applied_rule_id=result.applied_rule_id,
                     match_type=result.match_type,
                     is_manually_modified=False,
+                    # 컴플라이언스 감사 결과 스냅샷 (12단계)
+                    is_compliant=result.is_compliant,
+                    violation_reason=result.violation_reason,
+                    explanation_status=result.explanation_status,
                 )
             )
 
