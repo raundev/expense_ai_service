@@ -25,6 +25,7 @@ END 로 바로 가지 않고 반드시 `compliance` 노드를 거쳐, 사칙 위
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import TypedDict
 
@@ -37,6 +38,8 @@ from app.schemas.transactions import MatchType, SingleTransactionTestRequest
 from app.services.matchers import find_recent_approved_history, rule_matches
 from app.services.policy_service import PolicyService
 from app.services.rule_service import RuleService
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------- #
@@ -148,11 +151,23 @@ def compliance_node(state: TransactionState) -> dict:
         return {}
 
     policy_service = state["policy_service"]
-    verdict = policy_service.check_compliance(
-        payload=state["payload"],
-        category_name=result_category,
-        tenant=state["tenant"],
-    )
+    try:
+        verdict = policy_service.check_compliance(
+            payload=state["payload"],
+            category_name=result_category,
+            tenant=state["tenant"],
+        )
+    except Exception as exc:  # noqa: BLE001 -- 의도된 광범위 캡처
+        # [Fail-Open 정책] Qdrant/LLM 등 컴플라이언스 인프라 장애가 영수증 처리 전체를
+        # 블로킹하면 안 된다. 예외는 로깅만 하고 '준수'로 통과시켜 정상 END 로 보낸다.
+        # (감사 누락 < 서비스 마비 회피. 추후 재검증 배치로 보완 가능.)
+        logger.exception(
+            "컴플라이언스 검증 실패 -- fail-open 으로 준수 처리 (merchant=%s, category=%s): %s",
+            state["payload"].merchant_name,
+            result_category,
+            exc,
+        )
+        return {"is_compliant": True, "violation_reason": None}
 
     if verdict["is_compliant"]:
         return {"is_compliant": True, "violation_reason": None}
