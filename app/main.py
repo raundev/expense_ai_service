@@ -75,9 +75,13 @@ def create_app() -> FastAPI:
         debug=False,
     )
 
+    # CORS: 프론트엔드 테스트 콘솔(Vercel/localhost)에서의 호출을 허용한다.
+    # 테스트 단계에서는 모든 오리진을 허용한다(운영에서는 settings.cors_origins_list 로
+    # 화이트리스트 제한 권장). allow_credentials=True 와 "*" 조합은 Starlette 가 요청
+    # Origin 을 echo 하여 처리하므로, 헤더 기반(쿠키 미사용) 호출에서 CORS 에러가 없다.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=settings.cors_origins_list,
+        allow_origins=["*"],
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
