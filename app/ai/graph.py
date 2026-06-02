@@ -1,28 +1,31 @@
-"""영수증 용도 추천 파이프라인의 LangGraph StateGraph 정의 (10단계).
+"""영수증 용도 추천 + 컴플라이언스 파이프라인의 LangGraph StateGraph 정의 (10→12단계).
 
-이전(9단계)까지의 하드코딩된 순차 if-return 체인을 그래프로 모델링한다.
-외부 동작은 동일하지만 노드/엣지가 명시적으로 분리되어, 추후 컴플라이언스
-검증/사용자 확인 등의 노드를 레고처럼 끼워 넣기 쉽다.
+10단계의 추천 그래프(RULE→HISTORY→LLM)에, 11단계 RAG 엔진을 재활용하는
+컴플라이언스 검증 노드를 결합한다(12단계). 용도 분류에 **성공한** 영수증은
+END 로 바로 가지 않고 반드시 `compliance` 노드를 거쳐, 사칙 위배 여부를 판정한다.
 
       START
         │
         ▼
-      ┌──────┐  RULE 매칭  ┌─────┐
-      │ rule │ ──────────► │ END │
-      └──┬───┘              └─────┘
-         │ miss
-         ▼
-      ┌─────────┐  HISTORY  ┌─────┐
-      │ history │ ────────► │ END │
-      └────┬────┘            └─────┘
-           │ miss
-           ▼
-        ┌──────┐  LLM / NONE  ┌─────┐
-        │ llm  │ ───────────► │ END │
-        └──────┘              └─────┘
+      ┌──────┐  RULE 매칭     ┌────────────┐
+      │ rule │ ────────────► │            │
+      └──┬───┘                │            │
+         │ miss               │            │
+         ▼                    │            │
+      ┌─────────┐ HISTORY 매칭 │ compliance │ ──► END
+      │ history │ ───────────►│            │
+      └────┬────┘             │            │
+           │ miss             │            │
+           ▼                  │            │
+        ┌──────┐  LLM 매칭     └────────────┘
+        │ llm  │ ─────────────►   ▲
+        └──┬───┘                  │
+           │ NONE(분류 실패)        │
+           └──────────────────► END  (compliance 생략)
 """
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import TypedDict
 
@@ -33,7 +36,10 @@ from app.ai.llm_recommender import ReceiptLLMRecommender
 from app.core.dependencies import TenantContext
 from app.schemas.transactions import MatchType, SingleTransactionTestRequest
 from app.services.matchers import find_recent_approved_history, rule_matches
+from app.services.policy_service import PolicyService
 from app.services.rule_service import RuleService
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------- #
@@ -47,9 +53,11 @@ class TransactionState(TypedDict, total=False):
         tenant          : 멀티테넌트 식별 (company_id / workplace_id)
         db_session      : SQLAlchemy Session (rule/history 쿼리에 사용)
         llm_recommender : LLM 3차 fallback 구현체 (DI -> 테스트 mock 가능)
+        policy_service  : RAG 컴플라이언스 판정기 (DI -> 테스트 시 fake 임베딩 주입)
 
     Outputs (노드가 채워 넣음. 그래프 종료 시 match_type 은 반드시 채워져 있음):
         match_type, category_code, result_category, applied_rule_id
+        is_compliant, violation_reason, explanation_status  (compliance 노드 경유 시)
     """
 
     # Inputs
@@ -57,12 +65,18 @@ class TransactionState(TypedDict, total=False):
     tenant: TenantContext
     db_session: Session
     llm_recommender: ReceiptLLMRecommender
+    policy_service: PolicyService
 
     # Outputs
     match_type: MatchType
     category_code: str
     result_category: str
     applied_rule_id: int | None
+
+    # Compliance outputs (compliance_node 가 채움)
+    is_compliant: bool
+    violation_reason: str | None
+    explanation_status: str | None
 
 
 # ---------------------------------------------------------------------------- #
@@ -124,39 +138,94 @@ def llm_node(state: TransactionState) -> dict:
     }
 
 
+def compliance_node(state: TransactionState) -> dict:
+    """4차 COMPLIANCE 검증. 분류된 용도가 현재 테넌트의 사칙에 위배되는지 판정.
+
+    11단계 RAG 엔진(`PolicyService.check_compliance`)을 재활용한다. 위반이면
+    PRD 요구사항에 따라 `explanation_status` 를 무조건 '미요청' 으로 자동 초기화하여
+    소명 워크플로우의 시작점으로 만든다. 준수면 violation 관련 필드는 비운다.
+    """
+    result_category = state.get("result_category")
+    # 분류 결과가 없으면(이론상 NONE 은 여기까지 안 오지만) 방어적으로 판정 생략.
+    if not result_category:
+        return {}
+
+    policy_service = state["policy_service"]
+    try:
+        verdict = policy_service.check_compliance(
+            payload=state["payload"],
+            category_name=result_category,
+            tenant=state["tenant"],
+        )
+    except Exception as exc:  # noqa: BLE001 -- 의도된 광범위 캡처
+        # [Fail-Open 정책] Qdrant/LLM 등 컴플라이언스 인프라 장애가 영수증 처리 전체를
+        # 블로킹하면 안 된다. 예외는 로깅만 하고 '준수'로 통과시켜 정상 END 로 보낸다.
+        # (감사 누락 < 서비스 마비 회피. 추후 재검증 배치로 보완 가능.)
+        logger.exception(
+            "컴플라이언스 검증 실패 -- fail-open 으로 준수 처리 (merchant=%s, category=%s): %s",
+            state["payload"].merchant_name,
+            result_category,
+            exc,
+        )
+        return {"is_compliant": True, "violation_reason": None}
+
+    if verdict["is_compliant"]:
+        return {"is_compliant": True, "violation_reason": None}
+
+    # [중요] 위반 확정 -> 사유 기록 + 소명 상태를 '미요청' 으로 자동 초기화 (PRD).
+    return {
+        "is_compliant": False,
+        "violation_reason": verdict["reason"],
+        "explanation_status": "미요청",
+    }
+
+
 # ---------------------------------------------------------------------------- #
 # Routers (conditional edges)
 # ---------------------------------------------------------------------------- #
 def _route_after_rule(state: TransactionState) -> str:
-    return "end" if state.get("match_type") == "RULE" else "history"
+    # 매칭 성공 시 바로 END 가 아니라 compliance 를 거친다.
+    return "compliance" if state.get("match_type") == "RULE" else "history"
 
 
 def _route_after_history(state: TransactionState) -> str:
-    return "end" if state.get("match_type") == "HISTORY" else "llm"
+    return "compliance" if state.get("match_type") == "HISTORY" else "llm"
+
+
+def _route_after_llm(state: TransactionState) -> str:
+    # LLM 매칭 성공 -> compliance, 분류 실패(NONE) -> compliance 생략하고 END.
+    return "compliance" if state.get("match_type") == "LLM" else "end"
 
 
 # ---------------------------------------------------------------------------- #
 # Compile
 # ---------------------------------------------------------------------------- #
 def compile_recommendation_graph():
-    """추천 파이프라인 StateGraph 를 조립·컴파일하여 반환."""
+    """추천 + 컴플라이언스 파이프라인 StateGraph 를 조립·컴파일하여 반환."""
     workflow = StateGraph(TransactionState)
     workflow.add_node("rule", rule_node)
     workflow.add_node("history", history_node)
     workflow.add_node("llm", llm_node)
+    workflow.add_node("compliance", compliance_node)
 
     workflow.add_edge(START, "rule")
     workflow.add_conditional_edges(
         "rule",
         _route_after_rule,
-        {"history": "history", "end": END},
+        {"history": "history", "compliance": "compliance"},
     )
     workflow.add_conditional_edges(
         "history",
         _route_after_history,
-        {"llm": "llm", "end": END},
+        {"llm": "llm", "compliance": "compliance"},
     )
-    workflow.add_edge("llm", END)
+    workflow.add_conditional_edges(
+        "llm",
+        _route_after_llm,
+        {"compliance": "compliance", "end": END},
+    )
+    # 분류에 성공한 모든 경로는 compliance 를 거친 뒤 종료한다.
+    workflow.add_edge("compliance", END)
 
     return workflow.compile()
 

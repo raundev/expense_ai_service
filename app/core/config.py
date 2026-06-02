@@ -7,8 +7,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # 목적: 외부 라이브러리(httpx/openai/urllib3 등)가 우리 Settings 객체를 거치지 않고
 # os.environ 에서 직접 읽는 환경변수 -- 특히 SSL_CERT_FILE, REQUESTS_CA_BUNDLE --
 # 를 .env 한 곳에서 관리할 수 있게 한다.
-# 기존 os.environ 값은 덮어쓰지 않으므로(override=False) 시스템 환경변수가 우선한다.
-load_dotenv()
+# override=True: .env 를 단일 진실 공급원(source of truth)으로 강제한다. 잘못 설정된
+# 시스템 환경변수(예: 존재하지 않는 CA 경로를 가리키는 SSL_CERT_FILE)가 .env 의 올바른
+# 값을 가리는 드리프트를 방지한다. (11→12단계에서 실제로 LLM 호출이 깨졌던 원인)
+load_dotenv(override=True)
 
 
 class Settings(BaseSettings):

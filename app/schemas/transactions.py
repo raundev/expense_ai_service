@@ -23,8 +23,30 @@ class SingleTransactionTestRequest(BaseModel):
     amount: int = Field(..., description="금액(원)")
 
 
-class RecommendResponse(BaseModel):
-    """추천 결과."""
+class ComplianceFields(BaseModel):
+    """컴플라이언스(규정 준수) 감사 + 소명 워크플로우 공통 필드 (12단계, PRD 6.1).
+
+    `RecommendResponse` 와 `TransactionResultResponse` 가 공유한다.
+    추천 시점에는 `is_compliant` / `violation_reason` / `explanation_status` 만 채워지고,
+    나머지 소명 추적 필드는 이후 소명 워크플로우 단계에서 채워진다.
+    """
+
+    is_compliant: bool = Field(default=True, description="사칙 위배 여부 (위배 시 False)")
+    violation_reason: str | None = Field(default=None, description="위반 사유 (준수 시 None)")
+    explanation_status: str | None = Field(
+        default=None,
+        description="소명 상태: '미요청'/'요청완료'/'정상처리'/'위반확정'. 위반 자동판정 시 '미요청'.",
+    )
+    explanation_request_dt: datetime | None = Field(default=None, description="소명 요청 일시")
+    explanation_requester: str | None = Field(default=None, description="소명 요청자")
+    explanation_process_dt: datetime | None = Field(default=None, description="소명 처리 일시")
+    explanation_processor: str | None = Field(default=None, description="소명 처리자")
+    explanation_request_msg: str | None = Field(default=None, description="소명 요청 메시지")
+    explanation_process_comment: str | None = Field(default=None, description="소명 처리 코멘트")
+
+
+class RecommendResponse(ComplianceFields):
+    """추천 결과 (+ 컴플라이언스 감사 결과)."""
 
     category_code: str = Field(..., description="용도 코드")
     result_category: str = Field(..., description="용도명")
@@ -69,8 +91,11 @@ class TransactionUploadSummaryResponse(BaseModel):
 # ---------------------------------------------------------------------------- #
 # Read / Update / Summary DTOs (9단계)
 # ---------------------------------------------------------------------------- #
-class TransactionResultResponse(BaseModel):
-    """개별 트랜잭션 조회 응답. ORM 모델(ReceiptTransaction) → 자동 변환."""
+class TransactionResultResponse(ComplianceFields):
+    """개별 트랜잭션 조회 응답. ORM 모델(ReceiptTransaction) → 자동 변환.
+
+    `ComplianceFields` 를 상속하여 컴플라이언스/소명 필드를 그대로 노출한다.
+    """
 
     id: int
     file_id: int

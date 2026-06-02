@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -72,8 +72,40 @@ class ReceiptTransaction(Base):
         Boolean, nullable=False, default=False
     )
 
+    # --- 컴플라이언스(규정 준수) 감사 결과 (12단계, PRD 6.1) ---
+    # is_compliant: 사칙 위배 여부. RAG 컴플라이언스 노드가 판정. 기본 True(준수).
+    is_compliant: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default=text("1")
+    )
+    # violation_reason: 위반 사유 (프롬프트 초안의 compliance_reason). 준수 시 NULL.
+    violation_reason: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+
+    # --- 소명(해명) 워크플로우 추적 필드 (PRD '컴플라이언스 감사 소명 워크플로우') ---
+    # explanation_status: '미요청' / '요청완료' / '정상처리' / '위반확정' (Enum 성격).
+    #   위반 판정 시 compliance 노드가 '미요청' 으로 자동 초기화한다.
+    explanation_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    explanation_request_dt: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )  # 소명 요청 일시
+    explanation_requester: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # 소명 요청자
+    explanation_process_dt: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )  # 소명 처리(승인/반려) 일시
+    explanation_processor: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )  # 소명 처리자
+    explanation_request_msg: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )  # 소명 요청 메시지(사용자 제출 해명)
+    explanation_process_comment: Mapped[str | None] = mapped_column(
+        String(2048), nullable=True
+    )  # 소명 처리 코멘트(감사자 의견)
+
     def __repr__(self) -> str:  # pragma: no cover
         return (
             f"<ReceiptTransaction id={self.id} file_id={self.file_id} "
-            f"merchant={self.merchant_name!r} match_type={self.match_type!r}>"
+            f"merchant={self.merchant_name!r} match_type={self.match_type!r} "
+            f"is_compliant={self.is_compliant}>"
         )

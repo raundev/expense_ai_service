@@ -23,6 +23,18 @@ from app.services.transaction_service import (
 router = APIRouter()
 
 
+def get_transaction_service(
+    db: Annotated[Session, Depends(get_db)],
+) -> TransactionService:
+    """TransactionService 주입용 FastAPI Dependency.
+
+    엔드포인트가 서비스를 직접 생성하지 않고 이 의존성을 거치게 하여,
+    테스트에서 `app.dependency_overrides` 로 policy_service(가짜 임베딩) 를 주입한
+    TransactionService 를 끼워 넣을 수 있는 이음새(seam)를 만든다(12단계 검증용).
+    """
+    return TransactionService(db)
+
+
 # ---------------------------------------------------------------------------- #
 # 단건 추천 (테스트)
 # ---------------------------------------------------------------------------- #
@@ -35,10 +47,9 @@ router = APIRouter()
 def recommend_single_receipt(
     payload: SingleTransactionTestRequest,
     tenant: Annotated[TenantContext, Depends(get_tenant_info)],
-    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[TransactionService, Depends(get_transaction_service)],
 ) -> RecommendResponse:
-    """영수증 한 건의 정보를 받아 RULE/HISTORY/LLM 다단 추천 엔진을 돌린다."""
-    service = TransactionService(db)
+    """영수증 한 건의 정보를 받아 RULE/HISTORY/LLM 다단 추천 + 컴플라이언스 검증을 돌린다."""
     return service.recommend_single_receipt(payload, tenant)
 
 
@@ -54,14 +65,13 @@ def recommend_single_receipt(
 def upload_batch_transactions(
     payload: TransactionBatchUploadRequest,
     tenant: Annotated[TenantContext, Depends(get_tenant_info)],
-    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[TransactionService, Depends(get_transaction_service)],
 ) -> TransactionUploadSummaryResponse:
     """수십~수백 건의 영수증을 한 번에 업로드한다.
 
-    내부적으로 각 행에 대해 RULE → HISTORY → LLM → NONE 의 다단 추천 엔진을
-    돌려 결과를 `ReceiptTransaction` 에 적재한다.
+    내부적으로 각 행에 대해 RULE → HISTORY → LLM → NONE 의 다단 추천 엔진을 돌리고,
+    분류에 성공한 건은 컴플라이언스 검증까지 거쳐 결과를 `ReceiptTransaction` 에 적재한다.
     """
-    service = TransactionService(db)
     return service.process_batch_transactions(payload, tenant)
 
 
@@ -76,14 +86,13 @@ def upload_batch_transactions(
 def get_transactions_in_file(
     file_id: int,
     tenant: Annotated[TenantContext, Depends(get_tenant_info)],
-    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[TransactionService, Depends(get_transaction_service)],
 ) -> list[TransactionResultResponse]:
     """업로드된 파일(`file_id`)의 모든 트랜잭션을 ID 오름차순으로 조회.
 
     파일이 다른 테넌트 소유이거나 존재하지 않으면 404. (정보 노출 방지를 위해
     '존재하지 않음' 과 '권한 없음' 을 같은 404 로 응답한다.)
     """
-    service = TransactionService(db)
     try:
         rows = service.get_transactions_by_file(file_id, tenant)
     except ReceiptFileNotFoundError as exc:
@@ -105,14 +114,13 @@ def update_rows_manually(
     file_id: int,
     payload: TransactionManualUpdateRequest,
     tenant: Annotated[TenantContext, Depends(get_tenant_info)],
-    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[TransactionService, Depends(get_transaction_service)],
 ) -> list[TransactionResultResponse]:
     """한 파일 안의 여러 행을 한 번에 수동 교정한다 (atomic).
 
     각 행의 `category_code` / `result_category` 를 덮어쓰고 `is_manually_modified=True`
     로 마킹. 요청에 다른 테넌트/다른 파일의 transaction_id 가 섞여 있으면 전체 거부(404).
     """
-    service = TransactionService(db)
     try:
         updated = service.update_transactions_manually(file_id, payload, tenant)
     except ReceiptFileNotFoundError as exc:
@@ -133,14 +141,13 @@ def update_rows_manually(
 def get_company_summaries(
     corp_no: str,
     tenant: Annotated[TenantContext, Depends(get_tenant_info)],
-    db: Annotated[Session, Depends(get_db)],
+    service: Annotated[TransactionService, Depends(get_transaction_service)],
 ) -> list[FileClassifySummaryDTO]:
     """회사(`corp_no`) 단위의 업로드 파일 요약 목록.
 
     URL 의 `corp_no` 와 헤더의 `X-Company-ID` 가 다르면 403 Forbidden.
     같은 회사 내 모든 사업장(workplace)의 파일을 포함한다.
     """
-    service = TransactionService(db)
     try:
         files = service.get_company_classify_summaries(corp_no, tenant)
     except TenantMismatchError as exc:
