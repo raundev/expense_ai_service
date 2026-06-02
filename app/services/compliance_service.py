@@ -28,8 +28,14 @@ logger = logging.getLogger(__name__)
 # explanation_status enum 값 (모델 String 컬럼에 저장)
 STATUS_NOT_REQUESTED = "미요청"
 STATUS_REQUESTED = "요청완료"
+STATUS_SUBMITTED = "소명제출"  # Phase 2: 직원이 소명 제출
+STATUS_OVERDUE = "기한초과"  # Phase 2: 기한 내 미제출(에스컬레이션)
 STATUS_NORMAL = "정상처리"
 STATUS_VIOLATION = "위반확정"
+
+# 관리자가 최종 처리(정상처리/위반확정)할 수 있는 상태 집합 (Phase 2 확장).
+# 요청완료(직접 처리) / 소명제출(직원 제출 검토) / 기한초과(미제출 종결)에서 처리 가능.
+PROCESSABLE_STATES = {STATUS_REQUESTED, STATUS_SUBMITTED, STATUS_OVERDUE}
 
 
 class ComplianceTransactionNotFoundError(Exception):
@@ -208,6 +214,7 @@ class ComplianceService:
             tx.explanation_request_dt = now
             tx.explanation_requester = admin_id
             tx.explanation_request_msg = payload.request_message
+            tx.due_date = payload.due_date  # Phase 2: 소명 기한(선택)
 
         self.db.commit()
         for tx in rows:
@@ -227,8 +234,16 @@ class ComplianceService:
         payload: ExplanationProcessPayload,
         admin_id: str,
     ) -> list[ReceiptTransaction]:
-        """대상 건들의 소명 상태를 전달받은 status('정상처리'/'위반확정')로 종결 처리한다."""
+        """대상 건들의 소명 상태를 전달받은 status('정상처리'/'위반확정')로 종결 처리한다.
+
+        [상태 전이 가드] '요청완료' / '소명제출' / '기한초과' 상태에서만 처리 가능하다.
+        그 외(미요청·이미 종결됨)가 섞여 있으면 전체 거부(409).
+        """
         rows = self._fetch_owned(payload.transaction_ids, tenant)
+        invalid = [tx.id for tx in rows if tx.explanation_status not in PROCESSABLE_STATES]
+        if invalid:
+            raise ComplianceInvalidStateError(invalid, "요청완료/소명제출/기한초과")
+
         now = datetime.utcnow()
         for tx in rows:
             tx.explanation_status = payload.status
@@ -284,6 +299,82 @@ class ComplianceService:
             payload.cancel_reason,
         )
         return rows
+
+    # ------------------------------------------------------------------ #
+    # Employee self-service (Phase 2, 17단계)
+    # ------------------------------------------------------------------ #
+    def get_my_violations(
+        self,
+        tenant: TenantContext,
+        employee_id: str,
+        status: str | None = None,
+        skip: int = 0,
+        limit: int = 50,
+    ) -> list[ReceiptTransaction]:
+        """직원 **본인**의 위반/소명 대상 영수증만 조회한다.
+
+        보안: (company_id, workplace_id, employee_id) **3중 격리**. 타인/타테넌트 건은
+        애초에 쿼리에 포함되지 않는다. status 로 특정 소명 상태만 필터 가능.
+        """
+        filters = [
+            ReceiptTransaction.company_id == tenant.company_id,
+            ReceiptTransaction.workplace_id == tenant.workplace_id,
+            ReceiptTransaction.employee_id == employee_id,
+            ReceiptTransaction.is_compliant.is_(False),
+        ]
+        if status is not None:
+            filters.append(ReceiptTransaction.explanation_status == status)
+        stmt = (
+            select(ReceiptTransaction)
+            .where(*filters)
+            .order_by(
+                ReceiptTransaction.receipt_date.desc(),
+                ReceiptTransaction.id.desc(),
+            )
+            .offset(skip)
+            .limit(limit)
+        )
+        return list(self.db.execute(stmt).scalars().all())
+
+    def submit_explanation(
+        self,
+        tenant: TenantContext,
+        transaction_id: int,
+        employee_id: str,
+        content: str,
+    ) -> ReceiptTransaction:
+        """직원이 본인 위반 건에 소명을 제출한다 ('요청완료' -> '소명제출').
+
+        보안/검증:
+            - (company_id, workplace_id, employee_id, id) 모두 일치하는 본인 건만 대상.
+              아니면 ComplianceTransactionNotFoundError(404) -- 타인 건 존재조차 비노출.
+            - 현재 상태가 '요청완료' 가 아니면 ComplianceInvalidStateError(409).
+        """
+        stmt = select(ReceiptTransaction).where(
+            ReceiptTransaction.id == transaction_id,
+            ReceiptTransaction.company_id == tenant.company_id,
+            ReceiptTransaction.workplace_id == tenant.workplace_id,
+            ReceiptTransaction.employee_id == employee_id,
+        )
+        tx = self.db.execute(stmt).scalar_one_or_none()
+        if tx is None:
+            raise ComplianceTransactionNotFoundError([transaction_id])
+        if tx.explanation_status != STATUS_REQUESTED:
+            raise ComplianceInvalidStateError([transaction_id], STATUS_REQUESTED)
+
+        tx.explanation_status = STATUS_SUBMITTED
+        tx.explanation_content = content
+        tx.explanation_submit_dt = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(tx)
+        logger.info(
+            "직원 소명 제출: tenant=%s/%s employee=%s tx=%s -> 소명제출",
+            tenant.company_id,
+            tenant.workplace_id,
+            employee_id,
+            transaction_id,
+        )
+        return tx
 
     # ------------------------------------------------------------------ #
     # Internal helpers

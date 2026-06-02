@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.core.dependencies import TenantContext, get_tenant_info
+from app.core.dependencies import TenantContext, get_employee_id, get_tenant_info
 from app.db.session import get_db
 from app.schemas.compliance import (
     DashboardChartsResponse,
@@ -15,6 +15,7 @@ from app.schemas.compliance import (
     ExplanationCancelPayload,
     ExplanationProcessPayload,
     ExplanationRequestPayload,
+    ExplanationSubmitPayload,
 )
 from app.schemas.transactions import TransactionResultResponse
 from app.services.compliance_service import (
@@ -148,6 +149,11 @@ def process_explanation(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
+    except ComplianceInvalidStateError as exc:
+        # 처리 가능 상태(요청완료/소명제출/기한초과)가 아닌 건 포함 시 409
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
     return [TransactionResultResponse.model_validate(tx) for tx in rows]
 
 
@@ -273,3 +279,70 @@ def export_violations(
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": 'attachment; filename="compliance_violations.csv"'},
     )
+
+
+# ---------------------------------------------------------------------------- #
+# 직원용 소명 워크플로우 (Phase 2, 17단계)
+# ---------------------------------------------------------------------------- #
+@router.get(
+    "/my/transactions",
+    response_model=list[TransactionResultResponse],
+    summary="내 위반/소명 대상 영수증 조회 (직원 본인)",
+)
+def list_my_violations(
+    tenant: Annotated[TenantContext, Depends(get_tenant_info)],
+    employee_id: Annotated[str, Depends(get_employee_id)],
+    service: Annotated[ComplianceService, Depends(get_compliance_service)],
+    status_filter: Annotated[
+        str | None, Query(alias="status", description="소명 상태 필터(요청완료/소명제출 등)")
+    ] = None,
+    skip: Annotated[int, Query(ge=0, description="페이지네이션 offset")] = 0,
+    limit: Annotated[int, Query(ge=1, le=200, description="페이지 크기")] = 50,
+) -> list[TransactionResultResponse]:
+    """로그인 직원(`X-Employee-ID`) **본인**의 위반/소명 대상 영수증만 반환한다.
+
+    (company_id, workplace_id, employee_id) 3중 격리 — 타인 건은 노출되지 않는다.
+    """
+    rows = service.get_my_violations(
+        tenant=tenant,
+        employee_id=employee_id,
+        status=status_filter,
+        skip=skip,
+        limit=limit,
+    )
+    return [TransactionResultResponse.model_validate(tx) for tx in rows]
+
+
+@router.post(
+    "/transactions/{transaction_id}/submit-explanation",
+    response_model=TransactionResultResponse,
+    summary="소명 제출 (직원 본인, '요청완료' -> '소명제출')",
+)
+def submit_explanation(
+    transaction_id: int,
+    payload: ExplanationSubmitPayload,
+    tenant: Annotated[TenantContext, Depends(get_tenant_info)],
+    employee_id: Annotated[str, Depends(get_employee_id)],
+    service: Annotated[ComplianceService, Depends(get_compliance_service)],
+) -> TransactionResultResponse:
+    """직원이 본인 위반 건에 소명 내용을 제출한다.
+
+    - 본인(`X-Employee-ID`)·테넌트 소유가 아닌 건이면 404 (존재 비노출)
+    - 현재 상태가 '요청완료' 가 아니면 409 (잘못된 전이)
+    """
+    try:
+        tx = service.submit_explanation(
+            tenant=tenant,
+            transaction_id=transaction_id,
+            employee_id=employee_id,
+            content=payload.content,
+        )
+    except ComplianceTransactionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except ComplianceInvalidStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    return TransactionResultResponse.model_validate(tx)

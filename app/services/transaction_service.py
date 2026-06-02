@@ -98,8 +98,9 @@ class TransactionService:
             is_compliant=final_state.get("is_compliant", True),
             violation_reason=final_state.get("violation_reason"),
             explanation_status=final_state.get("explanation_status"),
-            # 입력 부서 정보를 응답에 그대로 에코(영속화는 batch 경로에서 수행).
+            # 입력 부서/직원 정보를 응답에 그대로 에코(영속화는 batch 경로에서 수행).
             department=payload.department,
+            employee_id=payload.employee_id,
         )
 
     # ------------------------------------------------------------------ #
@@ -144,6 +145,7 @@ class TransactionService:
                     company_id=tenant.company_id,
                     workplace_id=tenant.workplace_id,
                     department=tx.department,
+                    employee_id=tx.employee_id,
                     receipt_date=tx.receipt_date,
                     receipt_time=tx.receipt_time,
                     merchant_name=tx.merchant_name,

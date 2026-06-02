@@ -4,6 +4,7 @@
 explanation_status 의 4가지 값('미요청'/'요청완료'/'정상처리'/'위반확정')을 축으로
 관리자가 위반 영수증의 소명 절차를 진행한다.
 """
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -33,6 +34,15 @@ class ExplanationRequestPayload(BaseModel):
     request_message: str = Field(
         ..., min_length=1, description="사용자에게 전달할 소명 요청 메시지"
     )
+    due_date: datetime | None = Field(
+        default=None, description="소명 기한(선택). 미설정 시 기한 없음 (Phase 2)"
+    )
+
+
+class ExplanationSubmitPayload(BaseModel):
+    """직원 소명 제출 페이로드 (Phase 2). 직원이 본인 위반 건에 해명을 입력·제출한다."""
+
+    content: str = Field(..., min_length=1, description="직원이 작성한 소명(해명) 내용")
 
 
 class ExplanationProcessPayload(BaseModel):

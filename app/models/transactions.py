@@ -56,6 +56,8 @@ class ReceiptTransaction(Base):
 
     # --- 사용자 조직 정보 (14단계, PRD 5/7: 부서별 집계·필터·엑셀 컬럼용) ---
     department: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    # 개인 사용자(직원) 식별자 (17단계, Phase 2: 직원 본인 소명 조회/제출 격리 키)
+    employee_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
 
     # --- 영수증 원본 ---
     receipt_date: Mapped[date] = mapped_column(Date, nullable=False)
@@ -107,6 +109,21 @@ class ReceiptTransaction(Base):
     explanation_process_comment: Mapped[str | None] = mapped_column(
         String(2048), nullable=True
     )  # 소명 처리 코멘트(감사자 의견)
+
+    # --- Phase 2: 직원 직접 소명 제출 + 기한 에스컬레이션 (17단계) ---
+    # explanation_status 에 '소명제출' / '기한초과' 값이 추가된다(String 컬럼이라 스키마 변경 불요).
+    due_date: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )  # 소명 기한 (요청 시 관리자가 설정)
+    explanation_submit_dt: Mapped[datetime | None] = mapped_column(
+        DateTime, nullable=True
+    )  # 직원 소명 제출 일시
+    explanation_content: Mapped[str | None] = mapped_column(
+        String(4000), nullable=True
+    )  # 직원이 입력한 소명 본문
+    is_escalated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )  # 기한 초과 에스컬레이션 여부
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
