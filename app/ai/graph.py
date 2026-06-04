@@ -32,7 +32,13 @@ from typing import TypedDict
 from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
-from app.ai.llm_recommender import ReceiptLLMRecommender
+from app.ai.llm_recommender import (
+    DEFAULT_CATEGORIES,
+    TOP_N_CANDIDATES,
+    CategoryCandidate,
+    ReceiptLLMRecommender,
+    collapse_rules_to_candidates,
+)
 from app.core.dependencies import TenantContext
 from app.schemas.transactions import MatchType, SingleTransactionTestRequest
 from app.services.matchers import find_recent_approved_history, rule_matches
@@ -57,6 +63,7 @@ class TransactionState(TypedDict, total=False):
 
     Outputs (노드가 채워 넣음. 그래프 종료 시 match_type 은 반드시 채워져 있음):
         match_type, category_code, result_category, applied_rule_id
+        llm_suggested_code, llm_suggested_name  (LLM off-list 제안 시)
         is_compliant, violation_reason, explanation_status  (compliance 노드 경유 시)
     """
 
@@ -67,11 +74,18 @@ class TransactionState(TypedDict, total=False):
     llm_recommender: ReceiptLLMRecommender
     policy_service: PolicyService
 
+    # Intermediate (rule_node 가 채워 llm_node 로 전달하는 LLM 번호 선택 후보군)
+    category_candidates: list[CategoryCandidate]
+
     # Outputs
     match_type: MatchType
     category_code: str
     result_category: str
     applied_rule_id: int | None
+
+    # LLM off-list 자유 제안 (selection=0 일 때만 채워짐; 배치 적재/단건 로깅에 사용)
+    llm_suggested_code: str | None
+    llm_suggested_name: str | None
 
     # Compliance outputs (compliance_node 가 채움)
     is_compliant: bool
@@ -83,7 +97,12 @@ class TransactionState(TypedDict, total=False):
 # Nodes
 # ---------------------------------------------------------------------------- #
 def rule_node(state: TransactionState) -> dict:
-    """1차 RULE 매칭. 활성 규칙을 priority ASC 로 가져와 첫 매칭을 채택."""
+    """1차 RULE 매칭. 활성 규칙을 priority ASC 로 가져와 첫 매칭을 채택.
+
+    미매칭 시에는 3차 LLM fallback 을 위한 용도 후보군을 활성 규칙에서 추출해 넘긴다:
+    `collapse_rules_to_candidates` 로 distinct-collapse + min_priority 정렬 후 Top-N 으로
+    절단하며, 절단이 발생하면 경고 로그를 남긴다.
+    """
     db = state["db_session"]
     payload = state["payload"]
     tenant = state["tenant"]
@@ -97,7 +116,20 @@ def rule_node(state: TransactionState) -> dict:
                 "result_category": rule.result_category,
                 "applied_rule_id": rule.id,
             }
-    return {}  # 미매칭 -- 상태 변화 없음 -> 라우터가 history 로 보냄
+
+    # 미매칭 -- LLM 번호 선택용 후보군을 만들어 state 에 실어 보낸다(라우터가 history 로 보냄).
+    candidates = collapse_rules_to_candidates(active_rules)
+    if len(candidates) > TOP_N_CANDIDATES:
+        logger.warning(
+            "용도 후보군 %d개가 Top-%d 초과 -- 상위 %d개로 절단 (tenant=%s/%s)",
+            len(candidates),
+            TOP_N_CANDIDATES,
+            TOP_N_CANDIDATES,
+            tenant.company_id,
+            tenant.workplace_id,
+        )
+        candidates = candidates[:TOP_N_CANDIDATES]
+    return {"category_candidates": candidates}
 
 
 def history_node(state: TransactionState) -> dict:
@@ -117,24 +149,57 @@ def history_node(state: TransactionState) -> dict:
     return {}
 
 
-def llm_node(state: TransactionState) -> dict:
-    """3차 LLM 추론. 실패 시 최종 NONE/UNCLASSIFIED 로 그래프를 닫는다."""
-    payload = state["payload"]
-    llm_recommender = state["llm_recommender"]
-
-    rec = llm_recommender.recommend(payload)
-    if rec is not None:
-        return {
-            "match_type": "LLM",
-            "category_code": rec.category_code,
-            "result_category": rec.result_category,
-            "applied_rule_id": None,
-        }
+def _unclassified() -> dict:
+    """LLM 으로도 분류 실패 시의 최종 NONE 결과(컴플라이언스 생략)."""
     return {
         "match_type": "NONE",
         "category_code": "UNCLASSIFIED",
         "result_category": "미분류",
         "applied_rule_id": None,
+    }
+
+
+def llm_node(state: TransactionState) -> dict:
+    """3차 LLM 추론(번호 선택). 실패/off-list 시 최종 NONE 으로 그래프를 닫는다.
+
+    * 후보군이 비어 있으면(콜드스타트) `DEFAULT_CATEGORIES` 를 주입해 동일한 번호 선택을 탄다.
+    * selection > 0  : 주입된 후보 목록의 해당 항목을 채택 -> match_type="LLM".
+    * selection == 0 : off-list -> match_type="NONE" 으로 컴플라이언스를 건너뛰고,
+                       LLM 의 자유 제안(suggested_code/name)을 state 에 담아 넘긴다.
+    * 비활성/호출 실패: 분류 불가 -> match_type="NONE" (제안값 없음).
+    """
+    payload = state["payload"]
+    llm_recommender = state["llm_recommender"]
+
+    # 콜드스타트 통일: 후보군이 없으면 전역 기본값을 주입(자유 텍스트 모드로 분기하지 않음).
+    candidates = state.get("category_candidates") or DEFAULT_CATEGORIES
+
+    selection = llm_recommender.select(payload, candidates)
+    if selection is None:
+        return _unclassified()
+
+    sel = selection.selection
+    if 1 <= sel <= len(candidates):
+        chosen = candidates[sel - 1]
+        return {
+            "match_type": "LLM",
+            "category_code": chosen.code,
+            "result_category": chosen.name,
+            "applied_rule_id": None,
+        }
+
+    # selection == 0(off-list) 또는 범위 밖(이상 응답). 후자는 경고만 남기고 동일 처리.
+    if sel != 0:
+        logger.warning(
+            "LLM 이 후보 범위 밖 번호 반환(sel=%d, 후보=%d) -- off-list 로 처리 (merchant=%s)",
+            sel,
+            len(candidates),
+            payload.merchant_name,
+        )
+    return {
+        **_unclassified(),
+        "llm_suggested_code": selection.suggested_code,
+        "llm_suggested_name": selection.suggested_name,
     }
 
 

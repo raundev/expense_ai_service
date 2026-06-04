@@ -67,6 +67,13 @@ class ReceiptTransaction(Base):
     applied_rule_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     match_type: Mapped[str] = mapped_column(String(16), nullable=False)
 
+    # --- LLM off-list 제안 스냅샷 (데이터 플라이휠) ---
+    # LLM 이 후보 목록(번호 선택)에서 적합 항목을 찾지 못해 selection=0 을 반환했을 때,
+    # 자유롭게 제안한 신규 용도 코드/명을 그대로 적재한다. 배치 처리 시에만 저장되며,
+    # 단건 테스트 시에는 저장하지 않고 로그로만 남긴다. 추후 룰/카테고리 보강의 원천 데이터.
+    llm_suggested_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    llm_suggested_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
     # --- 사용자 보정 여부 ---
     is_manually_modified: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
