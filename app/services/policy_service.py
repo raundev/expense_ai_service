@@ -89,7 +89,9 @@ def build_policy_llm():
     if ssl_cert and os.path.isfile(ssl_cert):
         import httpx
 
-        llm_kwargs["http_client"] = httpx.Client(verify=ssl_cert, timeout=60.0)
+        llm_kwargs["http_client"] = httpx.Client(
+            verify=ssl_cert, timeout=settings.llm_http_timeout
+        )
 
     return ChatOpenAI(**llm_kwargs)
 

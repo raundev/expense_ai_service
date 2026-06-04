@@ -223,5 +223,9 @@ __marimo__/
 # SQLite DB
 *.db
 
+# Qdrant 임베디드(local) 모드 데이터 폴더
+qdrant_local/
+*.qdrant/
+
 # Generated context files
 code_context_for_gemini.txt

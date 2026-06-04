@@ -31,14 +31,41 @@ COLLECTION_NAME = "company_policies"
 # ---------------------------------------------------------------------------- #
 # Embeddings
 # ---------------------------------------------------------------------------- #
-def build_policy_embeddings() -> Embeddings:
-    """사내 규정 임베딩기(OpenAIEmbeddings) 구성.
+class _LocalFastEmbedEmbeddings(Embeddings):
+    """fastembed(TextEmbedding) 를 LangChain Embeddings 인터페이스로 감싼 로컬 임베딩기.
 
-    `.env` 의 `EMBEDDING_MODEL`(기본: text-embedding-3-small) 을 사용한다.
-    `llm_recommender.py` 와 동일하게 커스텀 base_url(`OPENAI_API_BASE`) 을 적용하고,
-    사내 CA(`SSL_CERT_FILE`) 가 있으면 `verify=<CA>` 로 http_client 를 주입하여
-    회사 SSL 인터셉션을 통과시킨다.
+    외부 임베딩 API 없이 로컬 ONNX 모델로 임베딩한다(오프라인/사내망/로컬 테스트용).
+    RunPod 처럼 임베딩 라우트가 없는 LLM 프록시 환경에서도 RAG/컴플라이언스를 돌릴 수 있다.
     """
+
+    def __init__(self, model_name: str) -> None:
+        # 사내 SSL 인터셉션 환경에서 모델 최초 다운로드가 httpx(= SSL_CERT_FILE 인식) 경로를
+        # 타도록 HF Xet 전송 백엔드를 비활성화한다(Xet 은 SSL_CERT_FILE 을 무시함).
+        # 모델이 캐시된 뒤에는 오프라인 로드라 무관하다.
+        os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+        from fastembed import TextEmbedding  # lazy import (fastembed 미설치 환경 보호)
+
+        self._model = TextEmbedding(model_name=model_name)
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [vec.tolist() for vec in self._model.embed(list(texts))]
+
+    def embed_query(self, text: str) -> list[float]:
+        return next(iter(self._model.embed([text]))).tolist()
+
+
+def build_policy_embeddings() -> Embeddings:
+    """사내 규정 임베딩기 구성.
+
+    `EMBEDDING_PROVIDER` 로 분기한다:
+      * "fastembed" -> 로컬 ONNX 임베딩(_LocalFastEmbedEmbeddings). API/네트워크 불필요.
+      * 그 외("openai") -> OpenAIEmbeddings. 커스텀 base_url(`OPENAI_API_BASE`) 적용 +
+        사내 CA(`SSL_CERT_FILE`) 가 있으면 `verify=<CA>` 로 http_client 주입.
+    """
+    if settings.EMBEDDING_PROVIDER.lower() == "fastembed":
+        logger.info("FastEmbed 로컬 임베딩 사용 (model=%s)", settings.EMBEDDING_MODEL)
+        return _LocalFastEmbedEmbeddings(settings.EMBEDDING_MODEL)
+
     emb_kwargs: dict = {
         "api_key": settings.OPENAI_API_KEY,
         "base_url": settings.OPENAI_API_BASE,
@@ -59,8 +86,22 @@ def build_policy_embeddings() -> Embeddings:
 # Qdrant client / collection
 # ---------------------------------------------------------------------------- #
 def _build_client() -> QdrantClient:
-    """`settings.QDRANT_URL` 로 Qdrant 클라이언트를 초기화한다."""
-    return QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+    """`settings.QDRANT_URL` 로 Qdrant 클라이언트를 초기화한다.
+
+    Docker/별도 설치 없이 로컬 테스트가 가능하도록 임베디드(local) 모드를 지원한다:
+      * ``":memory:"``       -> 인메모리(휘발성) 임베디드. 프로세스 종료 시 소멸.
+      * ``"path:<dir>"``     -> 로컬 폴더 영속 임베디드 (예: ``path:./qdrant_local``).
+      * 그 외(``http(s)://``) -> 원격 Qdrant 서버 모드 (운영/Docker).
+
+    주의: 임베디드 모드는 해당 폴더에 파일 락을 걸어 **한 번에 한 프로세스만** 연다
+    (uvicorn 단일 워커면 무방).
+    """
+    url = settings.QDRANT_URL
+    if url == ":memory:":
+        return QdrantClient(location=":memory:")
+    if url.startswith("path:"):
+        return QdrantClient(path=url[len("path:") :])
+    return QdrantClient(url=url, api_key=settings.QDRANT_API_KEY)
 
 
 def _ensure_collection(client: QdrantClient, embeddings: Embeddings) -> None:

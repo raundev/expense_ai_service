@@ -13,6 +13,7 @@ langgraph
 llama-index
 qdrant-client
 langchain-qdrant
+fastembed          # 로컬 ONNX 임베딩 옵션 (EMBEDDING_PROVIDER=fastembed). 임베딩 API 불필요.
 
 # --- Database (RDB) ---
 sqlalchemy

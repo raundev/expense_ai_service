@@ -106,6 +106,11 @@ class TransactionService:
             is_compliant=final_state.get("is_compliant", True),
             violation_reason=final_state.get("violation_reason"),
             explanation_status=final_state.get("explanation_status"),
+            # 입력 부서/직원 정보를 응답에 그대로 에코(영속화는 batch 경로에서 수행).
+            # 그래프 state 에 보존된 payload(단건: SingleTransactionTestRequest,
+            # 배치: TransactionRowDTO)에서 꺼낸다. staticmethod 라 인자가 final_state 뿐이다.
+            department=final_state["payload"].department,
+            employee_id=final_state["payload"].employee_id,
         )
 
     def recommend_single_receipt(
@@ -177,6 +182,8 @@ class TransactionService:
                     file_id=receipt_file.id,
                     company_id=tenant.company_id,
                     workplace_id=tenant.workplace_id,
+                    department=tx.department,
+                    employee_id=tx.employee_id,
                     receipt_date=tx.receipt_date,
                     receipt_time=tx.receipt_time,
                     merchant_name=tx.merchant_name,

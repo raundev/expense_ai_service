@@ -25,8 +25,12 @@ class Settings(BaseSettings):
     DEBUG: bool = True
     API_PREFIX: str = "/api"
 
-    # --- Relational Database (PostgreSQL) ---
-    DB_URL: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/expense_ai"
+    # --- Relational Database ---
+    # 로컬 개발 기본값(SQLite). 운영(PostgreSQL)에서는 DATABASE_URL 을 사용한다.
+    DB_URL: str = "sqlite:///./expense_ai.db"
+    # 운영용 표준 변수. 설정되면 DB_URL 보다 우선한다(SQLAlchemy 가 스킴으로 드라이버 자동 선택).
+    #   예) postgresql+psycopg2://user:pass@host:5432/expense_ai
+    DATABASE_URL: str | None = None
 
     # --- Vector Database (Qdrant) ---
     QDRANT_URL: str = "http://localhost:6333"
@@ -38,6 +42,10 @@ class Settings(BaseSettings):
     OPENAI_API_BASE: str = "https://api.runpod.ai/v2/v7fykeg2rhwgse/openai/v1"
     LLM_MODEL: str = "gpt-4o-mini"
     EMBEDDING_MODEL: str = "text-embedding-3-small"
+    # 임베딩 공급자: "openai"(OpenAI 호환 API) 또는 "fastembed"(로컬 ONNX, API/네트워크 불필요).
+    # fastembed 사용 시 EMBEDDING_MODEL 은 FastEmbed 지원 모델명으로 설정한다
+    #   (예: sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 — 한국어 지원, 384차원).
+    EMBEDDING_PROVIDER: str = "openai"
 
     # --- CORS ---
     # 콤마(,)로 구분된 오리진 목록. "*"은 전체 허용.
@@ -53,6 +61,29 @@ class Settings(BaseSettings):
     @property
     def cors_origins_list(self) -> list[str]:
         return [origin.strip() for origin in self.CORS_ORIGINS.split(",") if origin.strip()]
+
+    @property
+    def sqlalchemy_database_uri(self) -> str:
+        """실제 사용할 DB 연결 URI. DATABASE_URL(운영) 우선, 없으면 DB_URL(로컬).
+
+        SQLAlchemy 는 URI 스킴(`postgresql+psycopg2://` / `sqlite://`)으로 드라이버를
+        자동 선택하므로, 운영 PostgreSQL 전환은 DATABASE_URL 지정만으로 충분하다.
+        """
+        return self.DATABASE_URL or self.DB_URL
+
+    @property
+    def is_sqlite(self) -> bool:
+        return self.sqlalchemy_database_uri.startswith("sqlite")
+
+    @property
+    def llm_http_timeout(self) -> float:
+        """Chat LLM 호출 HTTP 타임아웃(초).
+
+        Qwen(RunPod vLLM, 예: Qwen/Qwen2.5-14B-Instruct-AWQ)은 대형 모델이라 응답이
+        최대 ~2분 30초까지 걸리므로 150초를 허용한다. 그 외 모델(클라우드 GPT 등)은 60초.
+        (임베딩 호출에는 적용하지 않는다.)
+        """
+        return 150.0 if self.LLM_MODEL.startswith("Qwen") else 60.0
 
 
 @lru_cache

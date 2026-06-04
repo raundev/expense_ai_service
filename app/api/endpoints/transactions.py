@@ -49,7 +49,14 @@ def recommend_single_receipt(
     tenant: Annotated[TenantContext, Depends(get_tenant_info)],
     service: Annotated[TransactionService, Depends(get_transaction_service)],
 ) -> RecommendResponse:
-    """영수증 한 건의 정보를 받아 RULE/HISTORY/LLM 다단 추천 + 컴플라이언스 검증을 돌린다."""
+    """영수증 한 건을 받아 `RULE → HISTORY → LLM` 다단 추천 + 컴플라이언스 검증을 수행한다.
+
+    - **요청 헤더(필수)**: `X-Company-ID`, `X-Workplace-ID`
+    - **입력**: 영수증 정보(가맹점/금액/일시/업종) + 선택 `department`(주부서)
+    - **응답**: 분류 결과(`category_code`/`result_category`/`match_type`)와 컴플라이언스
+      판정(`is_compliant`/`violation_reason`/`explanation_status`)을 함께 반환.
+    - 단건 테스트용으로 DB 에 저장하지 않는다(영속화는 배치 업로드 경로 사용).
+    """
     return service.recommend_single_receipt(payload, tenant)
 
 
