@@ -136,17 +136,56 @@ class PolicyService:
     # Helpers
     # ------------------------------------------------------------------ #
     @staticmethod
+    def _tenant_conditions(tenant: TenantContext) -> list[models.FieldCondition]:
+        """테넌트 격리 공통 조건(company_id AND workplace_id)."""
+        return [
+            models.FieldCondition(
+                key="metadata.company_id",
+                match=models.MatchValue(value=tenant.company_id),
+            ),
+            models.FieldCondition(
+                key="metadata.workplace_id",
+                match=models.MatchValue(value=tenant.workplace_id),
+            ),
+        ]
+
+    @staticmethod
     def _tenant_filter(tenant: TenantContext) -> models.Filter:
-        """현재 테넌트(company_id AND workplace_id)로 격리하는 Qdrant Payload Filter."""
+        """현재 테넌트(company_id AND workplace_id)로 격리하는 Qdrant Payload Filter.
+
+        (하위호환 유지 — 테스트 더블 등에서 사용. 신규 경로는 도메인별 필터를 쓴다.)
+        """
+        return models.Filter(must=PolicyService._tenant_conditions(tenant))
+
+    @staticmethod
+    def _policy_filter(tenant: TenantContext) -> models.Filter:
+        """챗봇 일반 규정 검색용: 테넌트 + domain="policy" (설계 §8 일관화)."""
         return models.Filter(
             must=[
+                *PolicyService._tenant_conditions(tenant),
                 models.FieldCondition(
-                    key="metadata.company_id",
-                    match=models.MatchValue(value=tenant.company_id),
+                    key="metadata.domain", match=models.MatchValue(value="policy")
+                ),
+            ]
+        )
+
+    @staticmethod
+    def _compliance_filter(tenant: TenantContext) -> models.Filter:
+        """영수증 컴플라이언스 검색용 — **이중 게이트**(Critical Design Rule #1, 설계 §8):
+        테넌트 + domain="expense_rule" AND is_compliance_source=true.
+
+        일반 규정(domain="policy")이 컴플라이언스 컨텍스트에 섞여 환각을 일으키는 것을 원천 차단.
+        """
+        return models.Filter(
+            must=[
+                *PolicyService._tenant_conditions(tenant),
+                models.FieldCondition(
+                    key="metadata.domain",
+                    match=models.MatchValue(value="expense_rule"),
                 ),
                 models.FieldCondition(
-                    key="metadata.workplace_id",
-                    match=models.MatchValue(value=tenant.workplace_id),
+                    key="metadata.is_compliance_source",
+                    match=models.MatchValue(value=True),
                 ),
             ]
         )
@@ -175,6 +214,7 @@ class PolicyService:
             {
                 "company_id": tenant.company_id,
                 "workplace_id": tenant.workplace_id,
+                "domain": "policy",  # 챗봇 일반 규정 도메인(§8 일관화)
                 "source": source_name,
             }
             for _ in chunks
@@ -203,7 +243,7 @@ class PolicyService:
             3) 있으면 그 문맥만 프롬프트에 넣어 ChatOpenAI 로 답변 생성.
         """
         docs = self.vector_store.similarity_search(
-            query, k=4, filter=self._tenant_filter(tenant)
+            query, k=4, filter=self._policy_filter(tenant)
         )
         if not docs:
             logger.info(
@@ -248,7 +288,7 @@ class PolicyService:
         docs = self.vector_store.similarity_search(
             f"{category_name} 사용 한도 및 사칙 규정",
             k=4,
-            filter=self._tenant_filter(tenant),
+            filter=self._compliance_filter(tenant),  # 이중 게이트(§8, Rule #1)
         )
         if not docs:
             return {"is_compliant": True, "reason": None}

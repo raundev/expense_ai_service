@@ -227,6 +227,12 @@ __marimo__/
 qdrant_local/
 *.qdrant/
 
+# 업로드된 문서 파일(테넌트 격리 경로) — Document 비동기 임베딩 파이프라인
+uploads/
+
+# 로컬 DB 백업 등
+*.bak
+
 # Generated context files
 code_context_for_gemini.txt
 

@@ -1,7 +1,7 @@
 """사내 규정(RAG) 벡터 스토어 세팅 (11단계).
 
 Qdrant 를 벡터 DB 로 사용한다. 모든 테넌트의 규정 청크를 단일 컬렉션
-(`company_policies`) 에 저장하되, 회사/사업장 격리는 컬렉션 분리가 아니라
+(`tenant_documents`) 에 저장하되, 회사/사업장 격리는 컬렉션 분리가 아니라
 각 청크 payload 의 `metadata.company_id` / `metadata.workplace_id` 에 대한
 Qdrant Payload Filter 로 수행한다 (실제 격리 검색 로직은 `policy_service` 참조).
 
@@ -24,8 +24,10 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# 전 테넌트 공용 컬렉션. 격리는 payload filter 로 수행한다.
-COLLECTION_NAME = "company_policies"
+# 전 테넌트·전 도메인 공용 단일 컬렉션(설계 §3). 회사/사업장/도메인 격리는 컬렉션 분리가
+# 아니라 청크 payload(metadata.*)에 대한 Qdrant Payload Filter 로 수행한다. 명칭은 격리에
+# 영향이 없으나 '공통 문서 저장소' 의미를 위해 tenant_documents 로 통일했다(설계 D2).
+COLLECTION_NAME = "tenant_documents"
 
 
 # ---------------------------------------------------------------------------- #
@@ -104,27 +106,55 @@ def _build_client() -> QdrantClient:
     return QdrantClient(url=url, api_key=settings.QDRANT_API_KEY)
 
 
+# 메타데이터 필터 고속화를 위한 Payload Index (설계 §3). langchain_qdrant 는 metadata 를
+# payload["metadata"] 하위에 저장하므로 인덱스 키는 "metadata.<field>" 형식이다.
+_PAYLOAD_INDEXES: dict = {
+    "metadata.company_id": models.PayloadSchemaType.KEYWORD,
+    "metadata.workplace_id": models.PayloadSchemaType.KEYWORD,
+    "metadata.domain": models.PayloadSchemaType.KEYWORD,
+    "metadata.owner_id": models.PayloadSchemaType.KEYWORD,
+    "metadata.doc_id": models.PayloadSchemaType.KEYWORD,  # 워커의 doc_id 단위 벡터 삭제(§3)에도 사용
+    "metadata.is_compliance_source": models.PayloadSchemaType.BOOL,
+}
+
+
+def _ensure_payload_indexes(client: QdrantClient) -> None:
+    """격리/필터 필드에 Payload Index 를 멱등 생성한다(고속 필터링).
+
+    company_id·workplace_id·domain·owner_id·doc_id(KEYWORD), is_compliance_source(BOOL).
+    이미 존재하거나(프로세스 재시작) 임베디드 모드 제약으로 실패해도 무해하므로 조용히
+    넘어간다 — Payload Filter 자체는 인덱스 없이도 정확히 동작한다(인덱스는 속도 최적화).
+    """
+    for field, schema in _PAYLOAD_INDEXES.items():
+        try:
+            client.create_payload_index(
+                collection_name=COLLECTION_NAME, field_name=field, field_schema=schema
+            )
+        except Exception as exc:  # noqa: BLE001 -- 멱등/모드 차이 흡수
+            logger.debug("payload index 보장 생략(%s): %s", field, exc)
+
+
 def _ensure_collection(client: QdrantClient, embeddings: Embeddings) -> None:
-    """`company_policies` 컬렉션이 없을 경우에만 생성한다.
+    """`tenant_documents` 컬렉션과 메타데이터 Payload Index 를 보장한다.
 
     벡터 차원은 임베딩 모델에 종속되므로(text-embedding-3-small=1536) 하드코딩하지
     않고 실제 임베딩 1회로 산출한다. 거리 함수는 QdrantVectorStore 기본값과 동일한
-    COSINE 을 사용한다.
+    COSINE 을 사용한다. Payload Index 는 신규/기존 컬렉션 모두에 대해 멱등 보장한다.
     """
-    if client.collection_exists(COLLECTION_NAME):
-        return
+    if not client.collection_exists(COLLECTION_NAME):
+        dim = len(embeddings.embed_query("dimension probe"))
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
+        )
+        logger.info("Qdrant 컬렉션 생성: %s (dim=%d, COSINE)", COLLECTION_NAME, dim)
 
-    dim = len(embeddings.embed_query("dimension probe"))
-    client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=models.VectorParams(size=dim, distance=models.Distance.COSINE),
-    )
-    logger.info("Qdrant 컬렉션 생성: %s (dim=%d, COSINE)", COLLECTION_NAME, dim)
+    _ensure_payload_indexes(client)
 
 
 @lru_cache(maxsize=1)
 def get_policy_vector_store() -> QdrantVectorStore:
-    """`company_policies` 컬렉션에 연결된 QdrantVectorStore 싱글톤을 반환한다.
+    """`tenant_documents` 컬렉션에 연결된 QdrantVectorStore 싱글톤을 반환한다.
 
     클라이언트 연결 / 컬렉션 보장 / 임베딩 세팅은 프로세스 단위 1회만 수행한다
     (lru_cache). 매 요청마다 재연결하지 않는다.

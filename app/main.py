@@ -53,12 +53,23 @@ OPENAPI_TAGS = [
     {"name": "Rule API", "description": "테넌트별 용도 분류 규칙(Rule Engine) 등록/수정/조회."},
     {
         "name": "Policy RAG API",
-        "description": "사내 규정 문서 적재(ingest)와 RAG 질의응답(chat). Qdrant Payload Filter 로 테넌트 격리.",
+        "description": "Policy RAG 챗봇: 봇 관리(bots)·RAG 채팅(chat)·추천 질문(recommend). "
+        "봇별 LLM 설정 오버라이드와 Qdrant Payload Filter 로 테넌트/봇 격리.",
+    },
+    {
+        "name": "Documents API",
+        "description": "공통(도메인 비종속) 문서 모듈: 업로드/텍스트 적재(비동기 임베딩)·목록·다운로드·Soft Delete. "
+        "범용 owner_id+domain 으로 챗봇 외 주체(컴플라이언스 엔진 등)도 재사용.",
     },
     {
         "name": "Compliance Admin API",
         "description": "관리자용 컴플라이언스 감사: 대시보드 KPI/시각화 차트, 위반 그리드 조회/엑셀(CSV) 다운로드, "
         "소명 요청/처리/취소 워크플로우.",
+    },
+    {
+        "name": "Admin API",
+        "description": "운영용 엔드포인트. Soft Delete(status=DELETING) 봇·문서의 물리 정리 워커"
+        "(벡터→파일→행) 수동/배치 트리거.",
     },
 ]
 

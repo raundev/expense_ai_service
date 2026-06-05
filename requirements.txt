@@ -16,6 +16,10 @@ qdrant-client
 langchain-qdrant
 fastembed          # 로컬 ONNX 임베딩 옵션 (EMBEDDING_PROVIDER=fastembed). 임베딩 API 불필요.
 
+# --- Document parsing (공통 documents 비동기 임베딩 파이프라인) ---
+pypdf              # PDF 파싱 (document_service._extract_text 가 lazy import)
+python-docx        # DOCX 파싱 (import docx)
+
 # --- Database (RDB) ---
 sqlalchemy
 psycopg2-binary
