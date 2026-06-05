@@ -229,3 +229,6 @@ qdrant_local/
 
 # Generated context files
 code_context_for_gemini.txt
+
+# Node.js (frontend)
+node_modules/
