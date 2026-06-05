@@ -29,6 +29,7 @@ from sqlalchemy.pool import StaticPool
 # pytest 가 tests/ 만 sys.path 에 넣어도 app 패키지를 찾도록 프로젝트 루트를 추가.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from app.ai.vector_store import COLLECTION_NAME  # noqa: E402
 from app.api.endpoints.policies import get_policy_service  # noqa: E402
 from app.api.endpoints.transactions import get_transaction_service  # noqa: E402
 from app.core.dependencies import TenantContext  # noqa: E402
@@ -178,12 +179,12 @@ def mock_policy_service() -> MockPolicyService:
     """FakeEmbedding + in-memory Qdrant 로 구성한 테스트 PolicyService."""
     qc = QdrantClient(location=":memory:")
     qc.create_collection(
-        collection_name="company_policies",
+        collection_name=COLLECTION_NAME,
         vectors_config=qmodels.VectorParams(size=EMBED_DIM, distance=qmodels.Distance.COSINE),
     )
     vs = QdrantVectorStore(
         client=qc,
-        collection_name="company_policies",
+        collection_name=COLLECTION_NAME,
         embedding=DeterministicFakeEmbedding(size=EMBED_DIM),
     )
     return MockPolicyService(vector_store=vs)

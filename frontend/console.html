@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Policy RAG 챗봇 테스트 콘솔</title>
+<style>
+  :root { --bd:#d0d7de; --bg:#f6f8fa; --pri:#0969da; --ok:#1a7f37; --warn:#9a6700; --err:#cf222e; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, "Segoe UI", "Malgun Gothic", sans-serif; margin: 0; background: var(--bg); color: #1f2328; }
+  header { background: #24292f; color: #fff; padding: 10px 16px; font-weight: 600; }
+  .wrap { display: grid; grid-template-columns: 340px 1fr; gap: 12px; padding: 12px; align-items: start; }
+  .card { background: #fff; border: 1px solid var(--bd); border-radius: 8px; padding: 12px; margin-bottom: 12px; }
+  .card h3 { margin: 0 0 8px; font-size: 14px; }
+  label { display: block; font-size: 12px; color: #57606a; margin: 6px 0 2px; }
+  input[type=text], input[type=url], select, textarea { width: 100%; padding: 6px 8px; border: 1px solid var(--bd); border-radius: 6px; font-size: 13px; }
+  textarea { resize: vertical; min-height: 54px; }
+  button { background: var(--pri); color: #fff; border: 0; border-radius: 6px; padding: 7px 12px; font-size: 13px; cursor: pointer; margin-top: 8px; }
+  button.sec { background: #eaeef2; color: #24292f; }
+  button.danger { background: var(--err); }
+  .row { display: flex; gap: 8px; align-items: center; }
+  .row > * { flex: 1; }
+  .chk { display: flex; align-items: center; gap: 6px; margin-top: 8px; font-size: 13px; }
+  .chk input { width: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { border-bottom: 1px solid var(--bd); padding: 4px 6px; text-align: left; }
+  .badge { font-size: 11px; padding: 1px 6px; border-radius: 10px; background: #eaeef2; }
+  .badge.COMPLETED { background: #dafbe1; color: var(--ok); }
+  .badge.PROCESSING { background: #fff8c5; color: var(--warn); }
+  .badge.FAILED, .badge.DELETING { background: #ffebe9; color: var(--err); }
+  #chatLog { height: 420px; overflow-y: auto; border: 1px solid var(--bd); border-radius: 8px; padding: 10px; background: #fafbfc; }
+  .bubble { max-width: 80%; padding: 8px 10px; border-radius: 10px; margin: 6px 0; white-space: pre-wrap; font-size: 13px; }
+  .bubble.user { background: var(--pri); color: #fff; margin-left: auto; }
+  .bubble.assistant { background: #eaeef2; }
+  .sources { margin-top: 6px; font-size: 12px; }
+  .sources summary { cursor: pointer; color: var(--pri); }
+  .src-item { border-left: 3px solid var(--pri); padding: 4px 8px; margin: 4px 0; background: #fff; border-radius: 4px; }
+  #logArea { font-family: monospace; font-size: 11px; white-space: pre-wrap; max-height: 120px; overflow-y: auto; color: #57606a; }
+  small { color: #57606a; }
+</style>
+</head>
+<body>
+<header>🤖 Policy RAG 챗봇 테스트 콘솔 <small style="color:#aaa">— bots · documents · chat · cleanup</small></header>
+<div class="wrap">
+  <!-- ===== 좌측: 설정 / 봇 / 문서 ===== -->
+  <div>
+    <div class="card">
+      <h3>① 연결 & 테넌트 헤더</h3>
+      <label>API Base URL</label>
+      <input type="url" id="apiBase" value="http://localhost:8000/api" />
+      <div class="row">
+        <div><label>X-Company-ID</label><input type="text" id="companyId" value="COMPANY_A" /></div>
+        <div><label>X-Workplace-ID</label><input type="text" id="workplaceId" value="HQ" /></div>
+      </div>
+      <button class="sec" onclick="refreshAll()">새로고침 (봇·문서 로드)</button>
+      <button class="danger" onclick="runCleanup()" title="DELETING 봇·문서 물리 정리">🧹 Cleanup 실행</button>
+    </div>
+
+    <div class="card">
+      <h3>② 봇 관리</h3>
+      <label>봇 이름</label>
+      <div class="row">
+        <input type="text" id="botName" placeholder="예: 인사규정봇" />
+        <button onclick="createBot()" style="flex:0 0 auto">생성+활성화</button>
+      </div>
+      <label>봇 선택 (이후 API 의 bot_id)</label>
+      <select id="botSelect" onchange="onBotChange()"></select>
+      <div class="row" style="margin-top:6px">
+        <button class="sec" onclick="enableBot()">활성화</button>
+        <button class="sec" onclick="disableBot()">비활성화</button>
+        <button class="danger" onclick="deleteBot()">Soft Delete</button>
+      </div>
+      <small>선택된 봇: <b id="currentBot">(없음)</b></small>
+    </div>
+
+    <div class="card">
+      <h3>③ 문서 업로드 / 적재</h3>
+      <label>대상 도메인</label>
+      <select id="docDomain">
+        <option value="policy">policy (챗봇 일반규정)</option>
+        <option value="expense_rule">expense_rule (경비/컴플라이언스)</option>
+      </select>
+      <div class="chk"><input type="checkbox" id="docCompliance" /><label style="margin:0">is_compliance_source (컴플라이언스 근거 문서)</label></div>
+      <label>owner_id (policy 는 봇 UUID 자동, 그 외 자유)</label>
+      <input type="text" id="ownerId" placeholder="bot UUID 또는 compliance-sys 등" />
+      <label>제목 / source_name</label>
+      <input type="text" id="docTitle" placeholder="예: 취업규칙_2026" />
+      <label>파일 업로드 (비동기 임베딩)</label>
+      <div class="row">
+        <input type="file" id="docFile" />
+        <button onclick="uploadDoc()" style="flex:0 0 auto">업로드</button>
+      </div>
+      <label>또는 텍스트 즉시 적재 (동기)</label>
+      <textarea id="ingestText" placeholder="규정 본문 텍스트..."></textarea>
+      <button class="sec" onclick="ingestText()">텍스트 적재</button>
+      <h3 style="margin-top:12px">문서 목록</h3>
+      <table><thead><tr><th>제목</th><th>domain</th><th>상태</th><th>청크</th><th></th></tr></thead><tbody id="docTable"></tbody></table>
+    </div>
+  </div>
+
+  <!-- ===== 우측: 채팅 ===== -->
+  <div>
+    <div class="card">
+      <h3>④ 채팅 (선택된 봇으로 /chat)</h3>
+      <small>session_id 는 첫 응답 후 자동 유지됩니다. 봇을 바꾸면 세션이 초기화됩니다.</small>
+      <div id="chatLog" style="margin-top:8px"></div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="chatInput" placeholder="예: 식대 한도가 얼마야?" onkeydown="if(event.key==='Enter')sendChat()" />
+        <button onclick="sendChat()" style="flex:0 0 auto">전송</button>
+      </div>
+    </div>
+    <div class="card">
+      <h3>로그</h3>
+      <div id="logArea"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let currentBot = null;
+let sessionId = null;
+
+function cfg() {
+  return {
+    base: $("#apiBase").value.replace(/\/+$/, ""),
+    company: $("#companyId").value.trim(),
+    workplace: $("#workplaceId").value.trim(),
+  };
+}
+function log(msg, cls) {
+  const el = $("#logArea");
+  el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + el.textContent;
+}
+
+// 공통 fetch — 테넌트 헤더 주입 + ApiResponse 언랩 + 에러 처리
+async function api(path, { method = "GET", json, form } = {}) {
+  const c = cfg();
+  const headers = { "X-Company-ID": c.company, "X-Workplace-ID": c.workplace };
+  const opt = { method, headers };
+  if (json !== undefined) { headers["Content-Type"] = "application/json"; opt.body = JSON.stringify(json); }
+  if (form !== undefined) { opt.body = form; } // multipart: Content-Type 자동
+  const res = await fetch(c.base + path, opt);
+  let data = null;
+  try { data = await res.json(); } catch (_) {}
+  if (!res.ok) throw new Error((data && (data.detail || data.message || data.error)) || `HTTP ${res.status}`);
+  // ApiResponse {success,data,message,error} 언랩 (신규 라우터). 그 외(ingest 등)는 원본 반환.
+  if (data && typeof data === "object" && "success" in data && "data" in data) {
+    if (!data.success) throw new Error(data.error || data.message || "요청 실패");
+    return data.data;
+  }
+  return data;
+}
+
+// ---- 봇 ----
+async function createBot() {
+  const name = $("#botName").value.trim();
+  if (!name) return alert("봇 이름을 입력하세요");
+  try {
+    const bot = await api("/v1/bots", { method: "POST", json: { name } });
+    await api(`/v1/bots/${bot.id}/enable`, { method: "PATCH" }); // 생성 직후 비활성 → 활성화
+    $("#botName").value = "";
+    await loadBots(bot.id);
+    log(`봇 생성+활성화: ${bot.name} (${bot.id})`);
+  } catch (e) { log("봇 생성 실패: " + e.message); alert(e.message); }
+}
+async function loadBots(selectId) {
+  const bots = await api("/v1/bots");
+  const sel = $("#botSelect");
+  sel.innerHTML = "";
+  bots.forEach((b) => {
+    const o = document.createElement("option");
+    o.value = b.id;
+    o.textContent = `${b.name} ${b.disabled ? "🔴비활성" : "🟢활성"} [${b.id.slice(0, 8)}]`;
+    sel.appendChild(o);
+  });
+  if (selectId) sel.value = selectId;
+  onBotChange();
+}
+function onBotChange() {
+  currentBot = $("#botSelect").value || null;
+  sessionId = null;
+  $("#currentBot").textContent = currentBot || "(없음)";
+  // policy 도메인 문서의 owner_id 는 보통 선택 봇 = 자동 채움
+  if ($("#docDomain").value === "policy") $("#ownerId").value = currentBot || "";
+  renderChat([]);
+}
+async function enableBot() { if (currentBot) { await api(`/v1/bots/${currentBot}/enable`, { method: "PATCH" }); await loadBots(currentBot); log("활성화"); } }
+async function disableBot() { if (currentBot) { await api(`/v1/bots/${currentBot}/disable`, { method: "PATCH" }); await loadBots(currentBot); log("비활성화"); } }
+async function deleteBot() {
+  if (!currentBot) return;
+  if (!confirm("이 봇을 Soft Delete (status=DELETING) 하시겠습니까? 물리 삭제는 Cleanup 에서.")) return;
+  await api(`/v1/bots/${currentBot}`, { method: "DELETE" });
+  log("봇 Soft Delete (DELETING)"); await loadBots();
+}
+
+// ---- 문서 ----
+async function uploadDoc() {
+  const f = $("#docFile").files[0];
+  if (!f) return alert("파일을 선택하세요");
+  const fd = new FormData();
+  fd.append("file", f);
+  fd.append("title", $("#docTitle").value || f.name);
+  fd.append("domain", $("#docDomain").value);
+  fd.append("is_compliance_source", $("#docCompliance").checked);
+  fd.append("owner_id", $("#ownerId").value);
+  try {
+    const doc = await api("/v1/documents/upload", { method: "POST", form: fd });
+    log(`업로드(비동기 임베딩 예약): ${doc.id} status=${doc.embedding_status}`);
+    setTimeout(loadDocs, 800); // 백그라운드 임베딩 반영 후 갱신
+    loadDocs();
+  } catch (e) { log("업로드 실패: " + e.message); alert(e.message); }
+}
+async function ingestText() {
+  const text = $("#ingestText").value.trim();
+  if (!text) return alert("텍스트를 입력하세요");
+  try {
+    const doc = await api("/v1/documents/ingest-text", { method: "POST", json: {
+      text, source_name: $("#docTitle").value || "text",
+      domain: $("#docDomain").value, is_compliance_source: $("#docCompliance").checked,
+      owner_id: $("#ownerId").value || null,
+    }});
+    $("#ingestText").value = "";
+    log(`텍스트 적재(동기): ${doc.id} status=${doc.embedding_status}`);
+    loadDocs();
+  } catch (e) { log("적재 실패: " + e.message); alert(e.message); }
+}
+async function loadDocs() {
+  try {
+    const docs = await api("/v1/documents");
+    const tb = $("#docTable");
+    tb.innerHTML = "";
+    docs.forEach((d) => {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `<td>${esc(d.title)}${d.is_compliance_source ? " 🛡️" : ""}</td>
+        <td>${esc(d.domain)}</td>
+        <td><span class="badge ${d.embedding_status}">${d.embedding_status}</span></td>
+        <td>${d.chunk_count}</td>
+        <td><button class="danger" style="padding:2px 6px;margin:0" onclick="deleteDoc('${d.id}')">삭제</button></td>`;
+      tb.appendChild(tr);
+    });
+  } catch (e) { log("문서 목록 실패: " + e.message); }
+}
+async function deleteDoc(id) {
+  await api(`/v1/documents/${id}`, { method: "DELETE" });
+  log("문서 Soft Delete (DELETING): " + id); loadDocs();
+}
+
+// ---- 채팅 ----
+const chatHistory = [];
+function renderChat(reset) {
+  if (Array.isArray(reset)) chatHistory.length = 0;
+  const box = $("#chatLog");
+  box.innerHTML = "";
+  chatHistory.forEach((m) => {
+    const b = document.createElement("div");
+    b.className = "bubble " + m.role;
+    b.textContent = m.content;
+    if (m.role === "assistant" && m.sources && m.sources.length) {
+      const det = document.createElement("details");
+      det.className = "sources";
+      const sum = document.createElement("summary");
+      sum.textContent = `📎 출처 ${m.sources.length}개`;
+      det.appendChild(sum);
+      m.sources.forEach((s) => {
+        const d = document.createElement("div");
+        d.className = "src-item";
+        const url = cfg().base + (s.document_url || `/v1/documents/${s.doc_id}/download`).replace(/^\/api/, "");
+        d.innerHTML = `<b>${esc(s.title || s.doc_id)}</b> ${s.score != null ? `<small>(score ${s.score.toFixed(3)})</small>` : ""}
+          <br><small>${esc((s.snippet || "").slice(0, 200))}</small>
+          <br><a href="${url}" target="_blank">원본 다운로드</a>`;
+        det.appendChild(d);
+      });
+      b.appendChild(det);
+    }
+    box.appendChild(b);
+  });
+  box.scrollTop = box.scrollHeight;
+}
+async function sendChat() {
+  if (!currentBot) return alert("먼저 봇을 선택하세요");
+  const q = $("#chatInput").value.trim();
+  if (!q) return;
+  chatHistory.push({ role: "user", content: q });
+  renderChat();
+  $("#chatInput").value = "";
+  const payload = { bot_id: currentBot, query: q };
+  if (sessionId) payload.session_id = sessionId;
+  try {
+    const r = await api("/v1/policies/chat", { method: "POST", json: payload });
+    sessionId = r.session_id;
+    chatHistory.push({ role: "assistant", content: r.answer, sources: r.sources || [] });
+    renderChat();
+    log(`chat OK (session=${sessionId.slice(0, 8)}, sources=${(r.sources || []).length})`);
+  } catch (e) {
+    chatHistory.push({ role: "assistant", content: "[오류] " + e.message });
+    renderChat(); log("chat 실패: " + e.message);
+  }
+}
+
+// ---- 운영 ----
+async function runCleanup() {
+  try { const r = await api("/admin/cleanup", { method: "POST" }); log("🧹 cleanup: " + JSON.stringify(r)); refreshAll(); }
+  catch (e) { log("cleanup 실패: " + e.message); }
+}
+async function refreshAll() {
+  try { await loadBots(currentBot); await loadDocs(); } catch (e) { log("새로고침 실패: " + e.message); }
+}
+function esc(s) { return String(s == null ? "" : s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
+
+// 초기 로드
+window.addEventListener("load", refreshAll);
+</script>
+</body>
+</html>
