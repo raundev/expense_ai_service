@@ -1,6 +1,7 @@
 # --- Web / API ---
 fastapi
 uvicorn[standard]
+python-multipart   # FastAPI Form/File(documents /upload) 처리. 라우트 빌드(import) 시점에 필수 — 누락 시 CI import 단계부터 실패.
 pydantic
 pydantic-settings
 
