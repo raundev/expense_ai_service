@@ -44,7 +44,8 @@ _DEFAULT_SYSTEM_PROMPT = """당신은 회사의 사내 규정을 안내하는 �
 문맥에 답이 없으면 추측하지 말고 정확히 "관련된 사내 규정을 찾을 수 없습니다." 라고만 답하세요."""
 
 _HISTORY_ONLY_SYSTEM = """당신은 회사 규정 챗봇입니다. 아래 '이전 대화' 의 내용만 근거로
-사용자의 요청(요약/번역/형식변환 등)을 수행하세요. 이전 대화에 없는 새로운 사실을 지어내지 마세요."""
+사용자의 요청(요약/번역/형식변환 등)을 수행하세요. 이전 대화에 없는 새로운 사실을 지어내지 마세요.
+사용자가 번역 등 다른 언어를 명시적으로 요청한 경우가 아니라면, 사용자의 질문에 사용된 언어와 동일한 언어로 답변하세요."""
 
 
 def build_chat_llm(*, model: str, temperature: float, max_tokens: int | None = None):
@@ -239,7 +240,7 @@ class ChatService:
             human += f"이전 대화:\n{history_text}\n\n"
         human += (
             f"참고 문맥:\n{context}\n\n질문: {query}\n\n"
-            "위 '참고 문맥' 만 근거로 한국어로 간결하게 답변하세요."
+            "위 '참고 문맥' 만 근거로 간결하게 답변하되, 질문에 사용된 언어와 동일한 언어로 답변하세요."
         )
         resp = self._llm_for(bot).invoke([("system", system), ("human", human)])
         answer = (getattr(resp, "content", "") or "").strip() or _NO_CONTEXT_ANSWER
