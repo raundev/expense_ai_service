@@ -1,0 +1,31 @@
+# Promtail — 앱 로그를 긁어 Loki 로 보낸다(LogQL 로 에이전트가 자가 검증).
+# 기본 가정: 앱이 ./logs/*.log 로 파일 로깅한다(obs-stack.compose.yml 의 OBS_LOG_DIR 마운트).
+#   앱이 stdout 로만 로깅한다면, 대신 docker 로깅 드라이버 또는 uvicorn 출력 리다이렉트를 쓴다.
+server:
+  http_listen_port: 9080
+  grpc_listen_port: 0
+
+positions:
+  filename: /tmp/positions.yaml
+
+clients:
+  - url: http://loki:3100/loki/api/v1/push
+
+scrape_configs:
+  - job_name: app-logs
+    static_configs:
+      - targets: [localhost]
+        labels:
+          app: expense-ai
+          __path__: /var/app-logs/*.log
+    pipeline_stages:
+      # 앱 로그가 JSON 이면 tenant_id 등으로 라벨링해 격리 검증(LogQL)에 쓴다.
+      - match:
+          selector: '{app="expense-ai"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  tenant_id: tenant_id
+            - labels:
+                level:

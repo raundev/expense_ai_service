@@ -1,0 +1,50 @@
+# 워크트리별 격리 관측 스택 — Loki(로그) + Promtail(수집) + Prometheus(메트릭) + Grafana(조회).
+#
+# 격리 원리: COMPOSE_PROJECT_NAME 과 포트(${OBS_*_PORT})를 워크트리 경로 해시에서 파생시켜
+# 주입한다(obs-up.ps1 이 환경변수로 설정). 따라서 여러 git worktree 가 동시에 스택을 띄워도
+# 컨테이너명·볼륨·포트가 충돌하지 않는다. 일시적(ephemeral) 용도이며 obs-down.ps1 로 정리한다.
+#
+# 직접 쓰지 말고 scripts/observability/obs-up.ps1 / obs-down.ps1 을 통해 실행할 것.
+
+services:
+  loki:
+    image: grafana/loki:3.0.0
+    command: -config.file=/etc/loki/local-config.yaml
+    ports:
+      - "${OBS_LOKI_PORT:-3100}:3100"
+    networks: [obs]
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    # 앱 로그 수집. 기본은 호스트의 ./logs 를 마운트해 *.log 를 긁는다(앱이 파일 로깅하도록 설정 시).
+    volumes:
+      - ${OBS_LOG_DIR:-../../logs}:/var/app-logs:ro
+      - ./promtail-config.yml:/etc/promtail/config.yml:ro
+    command: -config.file=/etc/promtail/config.yml
+    depends_on: [loki]
+    networks: [obs]
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "${OBS_PROM_PORT:-9090}:9090"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # 호스트의 앱(:8000/metrics) 스크레이프용
+    networks: [obs]
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_SECURITY_ADMIN_PASSWORD: "agent"
+    ports:
+      - "${OBS_GRAFANA_PORT:-3000}:3000"
+    depends_on: [loki, prometheus]
+    networks: [obs]
+
+networks:
+  obs:
+    driver: bridge

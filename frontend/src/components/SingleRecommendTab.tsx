@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { PlayCircle, ShieldCheck, ShieldAlert, Loader2 } from "lucide-react";
-import { api, errMessage } from "../api";
+import { api, errMessage, LLM_TIMEOUT_MS } from "../api";
 import type { RecommendResponse } from "../types";
 
 const ENDPOINT = "/api/v1/transactions/test-single-transaction/create";
@@ -35,14 +35,18 @@ export default function SingleRecommendTab() {
     setError(null);
     setResult(null);
     try {
-      const { data } = await api.post<RecommendResponse>(ENDPOINT, {
-        merchant_name: form.merchant_name,
-        amount: Number(form.amount),
-        receipt_date: form.receipt_date,
-        receipt_time: form.receipt_time,
-        department: form.department || null,
-        employee_id: form.employee_id || null,
-      });
+      const { data } = await api.post<RecommendResponse>(
+        ENDPOINT,
+        {
+          merchant_name: form.merchant_name,
+          amount: Number(form.amount),
+          receipt_date: form.receipt_date,
+          receipt_time: form.receipt_time,
+          department: form.department || null,
+          employee_id: form.employee_id || null,
+        },
+        { timeout: LLM_TIMEOUT_MS } // LLM(RunPod) 폴백 호출 시 최대 150초까지 대기
+      );
       setResult(data);
     } catch (e) {
       setError(errMessage(e));

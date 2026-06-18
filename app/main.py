@@ -4,6 +4,7 @@
 - 전역 예외 처리기로 예기치 못한 오류를 규격화된 JSON 으로 응답한다(스택 노출 방지).
 """
 import logging
+from contextlib import asynccontextmanager
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
@@ -13,8 +14,22 @@ from fastapi.responses import JSONResponse
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.dependencies import TenantContext, get_tenant_info
+from app.db.version_check import check_db_at_head
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """기동 시 DB 스키마 버전 점검 — 미적용을 '요청 시점 500' 대신 '기동 시점'에 노출.
+
+    운영(비-local)은 불일치 시 부팅 실패(fail-fast), 로컬은 경고만(개발 편의). 엔진은 lifespan
+    안에서 import 해 import-time 부작용(테스트 수집 단계 영향)을 피한다.
+    """
+    from app.db.session import engine
+
+    check_db_at_head(engine, enforce=(settings.ENVIRONMENT != "local"))
+    yield
 
 
 # ---------------------------------------------------------------------------- #
@@ -29,6 +44,8 @@ API_DESCRIPTION = """
 - `X-Company-ID` : 회사 식별자 (필수)
 - `X-Workplace-ID` : 사업장 식별자 (필수)
 - `X-Admin-ID` : 관리자 식별자 (컴플라이언스 소명 **요청/처리/취소** 시에만 필수, 감사 추적용)
+
+선택: `TENANT_ENFORCEMENT_MODE=enforce` 시 등록된 테넌트(`/admin/tenants`)만 접근 가능하며, 미등록/정지 테넌트는 403 이 반환됩니다.
 
 ### 핵심 파이프라인
 1. **추천** : `RULE → HISTORY → LLM` 다단 분류 (LangGraph StateGraph)
@@ -69,13 +86,14 @@ OPENAPI_TAGS = [
     {
         "name": "Admin API",
         "description": "운영용 엔드포인트. Soft Delete(status=DELETING) 봇·문서의 물리 정리 워커"
-        "(벡터→파일→행) 수동/배치 트리거.",
+        "(벡터→파일→행) 수동/배치 트리거. 테넌트 화이트리스트 등록/조회/상태변경(/admin/tenants).",
     },
 ]
 
 
 def create_app() -> FastAPI:
     app = FastAPI(
+        lifespan=_lifespan,
         title="Bizplay AI Compliance & Recommendation API",
         version="1.0.0",
         description=API_DESCRIPTION,

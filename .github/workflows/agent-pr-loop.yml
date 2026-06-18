@@ -1,0 +1,101 @@
+# 자율 PR 루프 (Ralph Wiggum) — 안전 스켈레톤.
+#
+# 안전 원칙(의도적):
+#   - 트리거는 수동(workflow_dispatch)만. push/schedule 자동 트리거 없음.
+#   - 기본 mode=dry-run: 코드 생성·테스트만 하고 푸시/PR 안 함.
+#   - mode=apply 라도 PR '생성'까지만. **자동 머지 없음** — 머지는 항상 사람이.
+#   - 에이전트 호출 단계는 placeholder. 실제 CLI/SDK 결선 + 시크릿은 후속(tech-debt DEBT-5).
+#
+# 필요한 시크릿/권한(활성화 시):
+#   - secrets.ANTHROPIC_API_KEY : 에이전트(Claude) 호출용.
+#   - GITHUB_TOKEN(기본 제공) + 아래 permissions : 브랜치 푸시·PR 생성용.
+# 운영 가이드: docs/references/agent-operating-manual.md
+
+name: Agent PR Loop (Ralph)
+
+on:
+  workflow_dispatch:
+    inputs:
+      task:
+        description: "작업 지시 또는 exec-plan 경로 (예: docs/exec-plans/2026-06-16-xxx.md)"
+        required: true
+        type: string
+      mode:
+        description: "dry-run(생성·테스트만) | apply(브랜치+PR 생성, 머지는 사람)"
+        required: true
+        default: "dry-run"
+        type: choice
+        options: ["dry-run", "apply"]
+      base_branch:
+        description: "PR 대상 베이스 브랜치"
+        required: false
+        default: "main"
+        type: string
+
+concurrency:
+  group: agent-pr-loop-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write          # 브랜치 푸시
+  pull-requests: write     # PR 생성(머지 아님)
+
+jobs:
+  agent-loop:
+    name: generate → test → (apply ? open PR)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Run agent (PLACEHOLDER — 결선 필요)
+        id: agent
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          TASK: ${{ inputs.task }}
+        run: |
+          echo "::group::Agent step"
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY 미설정 — 스켈레톤 상태로 종료(코드 변경 없음)."
+            echo "실제 결선 시 여기서 'claude -p \"$TASK\"' 또는 Agent SDK 를 호출해 변경을 만든다."
+          else
+            echo "TODO(DEBT-5): 에이전트 CLI/SDK 로 \"$TASK\" 수행. 현재는 no-op."
+          fi
+          echo "::endgroup::"
+
+      - name: Run tests (자가 검증 게이트)
+        env:
+          ENVIRONMENT: ci
+        run: pytest -q
+
+      - name: Open PR (mode=apply 일 때만, 변경이 있을 때만)
+        if: ${{ inputs.mode == 'apply' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "변경 없음 — PR 생략."; exit 0
+          fi
+          BRANCH="agent/ralph-$(date +%Y%m%d-%H%M%S)"
+          git config user.name  "agent-ralph"
+          git config user.email "agent-ralph@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "agent(ralph): ${{ inputs.task }}"
+          git push origin "$BRANCH"
+          gh pr create --base "${{ inputs.base_branch }}" --head "$BRANCH" \
+            --title "agent(ralph): ${{ inputs.task }}" \
+            --body "자율 루프가 생성한 PR. **자동 머지 없음** — 사람 리뷰/머지 필요.\n\n- 지시: ${{ inputs.task }}\n- 검증: CI(pytest) 통과 후 생성됨."
+          echo "PR 생성 완료(머지는 사람이)."

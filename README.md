@@ -40,6 +40,23 @@
 
 > 헤더 누락 시 `422` 가 반환됩니다.
 
+### 테넌트 등록 화이트리스트 (선택, 점진 적용)
+
+미등록 `(company_id, workplace_id)` 로 데이터가 생성·조회되는 것을 막으려면 **테넌트 화이트리스트**를 사용합니다.
+`tenants` 테이블에 등록된 `ACTIVE` 테넌트만 도메인 API 에 접근할 수 있습니다.
+
+- 설정 `TENANT_ENFORCEMENT_MODE` (env): `off`(기본, 검증 안 함) → `log`(미등록 경고만) → `enforce`(미등록/`SUSPENDED` 는 `403`).
+- 등록/관리(관리자용, 게이트 비적용):
+
+| Method | Path | 설명 |
+|--------|------|------|
+| POST | `/api/admin/tenants` | 테넌트 등록(회사/사업장 화이트리스트 추가) |
+| GET  | `/api/admin/tenants` | 테넌트 목록 |
+| PATCH | `/api/admin/tenants/{tenant_id}` | 상태 변경(`SUSPENDED` 차단 / `ACTIVE` 복구) |
+
+> ⚠️ 등록 API 자체는 무인증이므로 실서비스에서는 내부망/관리자 인증으로 보호해야 합니다.
+> 기존 데이터는 마이그레이션이 distinct `(company_id, workplace_id)` 를 `ACTIVE` 로 자동 백필합니다.
+
 ---
 
 ## 📚 주요 API 엔드포인트

@@ -4,6 +4,7 @@ from app.models.chat import ChatMessage, ChatSession
 from app.models.documents import Document
 from app.models.history import ApprovalHistory
 from app.models.rules import ReceiptRule
+from app.models.tenant import Tenant
 from app.models.transactions import ReceiptFile, ReceiptTransaction
 
 __all__ = [
@@ -18,4 +19,6 @@ __all__ = [
     "Document",
     "ChatSession",
     "ChatMessage",
+    # --- 테넌트 화이트리스트 ---
+    "Tenant",
 ]

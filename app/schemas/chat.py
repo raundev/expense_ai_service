@@ -65,3 +65,26 @@ class ChatModelsResponse(BaseModel):
     """GET /policies/chat/models 응답 (설계 §5.4)."""
 
     models: list[str] = Field(default_factory=list)
+
+
+class ChatTranslateRequest(BaseModel):
+    """소스(규정 원문) 온디맨드 번역 요청.
+
+    답변은 chat 단계에서 질문 언어로 생성되지만, 소스 스니펫은 규정 원문(보통 한국어)
+    그대로 노출된다(증빙 무결성). 사용자가 특정 소스의 '번역' 버튼을 누를 때만 이 API 로
+    해당 스니펫을 질문 언어로 번역한다. 봇 LLM/테넌트 격리는 bot_id 로 강제한다.
+    """
+
+    bot_id: str = Field(..., description="번역에 사용할 봇 UUID(테넌트/봇 소유 검증 + LLM 설정)")
+    text: str = Field(..., min_length=1, description="번역할 원문(소스 스니펫)")
+    reference_query: str = Field(
+        ...,
+        min_length=1,
+        description="목표 언어 판정 기준 질문. 이 질문에 사용된 언어로 text 를 번역한다.",
+    )
+
+
+class ChatTranslateResponse(BaseModel):
+    """소스 번역 결과."""
+
+    translated: str = Field(..., description="reference_query 언어로 번역된 텍스트")

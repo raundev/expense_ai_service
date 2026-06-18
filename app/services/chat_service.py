@@ -47,6 +47,16 @@ _HISTORY_ONLY_SYSTEM = """당신은 회사 규정 챗봇입니다. 아래 '이�
 사용자의 요청(요약/번역/형식변환 등)을 수행하세요. 이전 대화에 없는 새로운 사실을 지어내지 마세요.
 사용자가 번역 등 다른 언어를 명시적으로 요청한 경우가 아니라면, 사용자의 질문에 사용된 언어와 동일한 언어로 답변하세요."""
 
+# 소스(규정 원문) 온디맨드 번역용 — '대상 언어'(코드에서 판정) 로 '원문' 을 옮긴다.
+# 목표 언어를 LLM 추론에 맡기면 Qwen(중국계)이 짧은 한자 질문을 중국어로 오판하는 사례가 있어,
+# 호출부에서 유니코드 스크립트로 언어를 먼저 판정해 명시적으로 지정한다.
+_TRANSLATE_SYSTEM = """당신은 사내 규정 문서를 번역하는 번역기입니다.
+주어진 '원문' 을 지정된 '대상 언어' 로 정확히 번역하세요.
+- 의미를 그대로 보존하고, 규정 용어·수치·조항 번호는 정확히 옮기세요.
+- 내용을 요약하거나 새로운 정보를 덧붙이지 마세요.
+- 원문이 이미 대상 언어와 같으면 원문을 그대로 반환하세요.
+- 번역 결과 텍스트만 출력하고, 머리말·설명·따옴표를 붙이지 마세요."""
+
 
 def build_chat_llm(*, model: str, temperature: float, max_tokens: int | None = None):
     """봇 설정(model/temperature/max_tokens)으로 ChatOpenAI 구성.
@@ -376,6 +386,49 @@ class ChatService:
         self.db.refresh(session)
 
         return {"answer": answer, "session_id": session.id, "sources": sources}
+
+    # ------------------------------------------------------------------ #
+    # Translate (소스 온디맨드 번역)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _detect_target_language(text: str) -> str:
+        """질문 텍스트의 주 언어를 유니코드 스크립트로 판정해 한국어 라벨로 반환.
+
+        목표 언어를 LLM 추론에 맡기면 Qwen 이 일본어(한자 위주 짧은 문장)를 중국어로
+        오판하는 사례가 있어, 가나/한글 등 '명확한 신호' 를 우선으로 결정론적으로 고른다:
+          - 히라가나·가타카나(0x3040~0x30FF) 가 하나라도 있으면 → 일본어
+          - 한글 음절(0xAC00~0xD7A3) 이 하나라도 있으면 → 한국어
+          - 위가 없고 CJK 한자(0x4E00~0x9FFF) 가 있으면 → 중국어
+          - 그 외(라틴 등) → 영어
+        """
+        has_cjk = False
+        for ch in text:
+            o = ord(ch)
+            if 0x3040 <= o <= 0x30FF:  # 가나 → 일본어 확정
+                return "일본어"
+            if 0xAC00 <= o <= 0xD7A3:  # 한글 → 한국어 확정
+                return "한국어"
+            if 0x4E00 <= o <= 0x9FFF:  # 한자(가나/한글 없을 때만 중국어로 판정)
+                has_cjk = True
+        return "중국어" if has_cjk else "영어"
+
+    def translate_text(
+        self, tenant: TenantContext, bot_id: str, text: str, reference_query: str
+    ) -> str:
+        """소스 스니펫(규정 원문)을 `reference_query` 의 언어로 번역한다.
+
+        봇 LLM/테넌트 격리를 위해 봇을 먼저 검증한다(없으면 404, disabled 면 409).
+        목표 언어는 `_detect_target_language` 로 코드에서 결정해 프롬프트에 명시한다.
+        LLM 응답이 비면 원문을 그대로 돌려 안전하게 폴백한다(번역 실패가 빈 화면으로
+        이어지지 않도록).
+        """
+        bot = self._get_active_bot(bot_id, tenant)
+        target_language = self._detect_target_language(reference_query)
+        human = f"대상 언어: {target_language}\n\n원문:\n{text}"
+        resp = self._llm_for(bot).invoke(
+            [("system", _TRANSLATE_SYSTEM), ("human", human)]
+        )
+        return (getattr(resp, "content", "") or "").strip() or text
 
     # ------------------------------------------------------------------ #
     # History 조회 (§5.1)
