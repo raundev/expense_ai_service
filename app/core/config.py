@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     # 사내 GPU(RunPod) 프록시. OpenAI 호환 endpoint 를 그대로 사용한다.
     OPENAI_API_BASE: str = "https://api.runpod.ai/v2/v7fykeg2rhwgse/openai/v1"
     LLM_MODEL: str = "gpt-4o-mini"
+    # Chat LLM 호출 HTTP 타임아웃(초)의 명시적 override. 설정하면 자동 판정을 무시하고
+    # 이 값을 그대로 쓴다. 미설정(None)이면 OPENAI_API_BASE 기준으로 자동 결정한다
+    #   (RunPod GPU 프록시는 큐 대기로 느려서 길게, 그 외 클라우드는 짧게 — llm_http_timeout 참고).
+    LLM_HTTP_TIMEOUT: float | None = None
     EMBEDDING_MODEL: str = "text-embedding-3-small"
     # 임베딩 공급자: "openai"(OpenAI 호환 API) 또는 "fastembed"(로컬 ONNX, API/네트워크 불필요).
     # fastembed 사용 시 EMBEDDING_MODEL 은 FastEmbed 지원 모델명으로 설정한다
@@ -50,6 +54,13 @@ class Settings(BaseSettings):
     # --- CORS ---
     # 콤마(,)로 구분된 오리진 목록. "*"은 전체 허용.
     CORS_ORIGINS: str = "*"
+
+    # --- Multi-tenant 등록 검증 ---
+    # 미등록 (company_id, workplace_id) 의 도메인 API 접근 차단 모드(점진 롤아웃).
+    #   "off"     : 검증 안 함(기존 동작). 기본값 — 백필/모니터링 전 안전 기본값.
+    #   "log"     : 미등록이어도 통과하되 경고 로그만 남김(화이트리스트 모니터링 단계).
+    #   "enforce" : 미등록/정지(SUSPENDED) 테넌트는 403 으로 차단.
+    TENANT_ENFORCEMENT_MODE: str = "off"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -76,14 +87,26 @@ class Settings(BaseSettings):
         return self.sqlalchemy_database_uri.startswith("sqlite")
 
     @property
+    def is_runpod_llm(self) -> bool:
+        """LLM endpoint(OPENAI_API_BASE)가 사내 RunPod GPU 프록시인지."""
+        return "runpod.ai" in self.OPENAI_API_BASE.lower()
+
+    @property
     def llm_http_timeout(self) -> float:
         """Chat LLM 호출 HTTP 타임아웃(초).
 
-        Qwen(RunPod vLLM, 예: Qwen/Qwen2.5-14B-Instruct-AWQ)은 대형 모델이라 응답이
-        최대 ~2분 30초까지 걸리므로 150초를 허용한다. 그 외 모델(클라우드 GPT 등)은 60초.
-        (임베딩 호출에는 적용하지 않는다.)
+        우선순위:
+          1) LLM_HTTP_TIMEOUT 이 명시되면 그 값을 그대로 사용한다(운영자 강제 지정).
+          2) 아니면 endpoint 기준으로 자동 판정한다 — RunPod GPU 프록시는 콜드스타트·
+             큐 대기로 응답이 최대 ~2분 30초까지 걸려 150초를, 그 외 클라우드(GPT 등)는 60초.
+
+        이전엔 모델명 접두사(`LLM_MODEL.startswith("Qwen")`)로 판정했으나, 같은 RunPod
+        endpoint 라도 모델명이 바뀌면(소문자 qwen·다른 모델 등) 타임아웃이 조용히 60초로
+        떨어지는 함정이 있어 endpoint 기준으로 바꿨다. (임베딩 호출에는 적용하지 않는다.)
         """
-        return 150.0 if self.LLM_MODEL.startswith("Qwen") else 60.0
+        if self.LLM_HTTP_TIMEOUT is not None:
+            return self.LLM_HTTP_TIMEOUT
+        return 150.0 if self.is_runpod_llm else 60.0
 
 
 @lru_cache
