@@ -7,6 +7,20 @@ const BOTS_URL = "/api/v1/bots";
 const CHAT_URL = "/api/v1/policies/chat";
 const TRANSLATE_URL = "/api/v1/policies/chat/translate";
 
+// '번역' 버튼 라벨을 질문 언어에 맞춘다(일본어→翻訳 / 한국어→번역 / 중국어→翻译 / 그 외→Translate).
+// 백엔드 ChatService._detect_target_language 와 동일한 유니코드 스크립트 판정:
+// 가나/한글은 즉시 확정하고, 한자는 가나·한글이 전혀 없을 때만 중국어로 본다.
+function translateLabel(text: string): string {
+  let hasCjk = false;
+  for (const ch of text) {
+    const o = ch.codePointAt(0) ?? 0;
+    if (o >= 0x3040 && o <= 0x30ff) return "翻訳"; // 가나 → 일본어 확정
+    if (o >= 0xac00 && o <= 0xd7a3) return "번역"; // 한글 → 한국어 확정
+    if (o >= 0x4e00 && o <= 0x9fff) hasCjk = true; // 한자(가나/한글 없을 때만 중국어)
+  }
+  return hasCjk ? "翻译" : "Translate";
+}
+
 // 소스 번역 상태 — key=`${메시지인덱스}-${소스인덱스}`.
 interface TranslationState {
   loading?: boolean;
@@ -214,7 +228,7 @@ export default function RagPage() {
                                 ) : (
                                   <Languages size={11} />
                                 )}
-                                번역
+                                {translateLabel(messages[i - 1]?.content ?? "")}
                               </button>
                             )}
                             {tr?.translated && (
