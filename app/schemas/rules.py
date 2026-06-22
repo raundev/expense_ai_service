@@ -48,3 +48,31 @@ class RuleResponse(RuleBase):
     workplace_id: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# ---------------------------------------------------------------------------- #
+# Bulk(일괄) 등록 DTO
+# ---------------------------------------------------------------------------- #
+class RuleBulkCreateRequest(BaseModel):
+    """규칙 일괄 등록 요청.
+
+    신규 테넌트 온보딩/시드용. 거래(Transaction) 배치 업로드와 동일하게 한 번의
+    요청으로 여러 규칙을 원자적(all-or-nothing)으로 등록한다.
+    개별 항목은 단건 등록과 동일한 `RuleRequest` 스키마이며, company_id/workplace_id
+    는 헤더(TenantContext)에서 강제 주입되므로 Body 에서 받지 않는다.
+    """
+
+    rules: list[RuleRequest] = Field(
+        ..., min_length=1, description="등록할 규칙 목록(최소 1건)"
+    )
+
+
+class RuleBulkCreateResponse(BaseModel):
+    """규칙 일괄 등록 결과.
+
+    `created_count` 는 실제 생성된 규칙 수이며, `rules` 는 생성된 규칙 전체를
+    (DB 가 채운 id 포함) 입력 순서대로 돌려준다.
+    """
+
+    created_count: int = Field(..., description="생성된 규칙 수")
+    rules: list[RuleResponse] = Field(..., description="생성된 규칙 목록(id 포함)")

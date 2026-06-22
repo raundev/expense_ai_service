@@ -11,6 +11,7 @@ from datetime import date
 from sqlalchemy import select
 
 from app.ai.llm_recommender import LLMSelection
+from app.models.rules import ReceiptRule
 from app.models.transactions import ReceiptTransaction
 from app.schemas.transactions import TransactionBatchUploadRequest, TransactionRowDTO
 from app.services.transaction_service import TransactionService
@@ -28,7 +29,30 @@ def _row(**overrides) -> TransactionRowDTO:
     return TransactionRowDTO(**data)
 
 
+def _seed_meal_rule(db_session, tenant) -> None:
+    """LLM 후보군을 만들기 위한 활성 규칙 1건 시드.
+
+    조건 키워드를 어떤 영수증에도 매칭되지 않게 두어 1차 RULE 은 미스시키고,
+    LLM 후보군(=[MEAL/식대])만 채워 3차 LLM 단계까지 흐르게 한다.
+    (등록된 룰이 0개면 그래프가 NO_RULE 로 즉시 종료하므로 LLM 단계 검증 자체가 불가.)
+    """
+    db_session.add(
+        ReceiptRule(
+            company_id=tenant.company_id,
+            workplace_id=tenant.workplace_id,
+            rule_name="식대",
+            condition_keyword="매칭되지않는키워드_ZZZ",
+            category_code="MEAL",
+            result_category="식대",
+            priority=0,
+            is_active=True,
+        )
+    )
+    db_session.commit()
+
+
 def test_batch_persists_offlist_suggestions(db_session, tenant, make_recommender, make_policy):
+    _seed_meal_rule(db_session, tenant)  # LLM 단계까지 흐르도록 후보군 확보
     rec = make_recommender(LLMSelection(selection=0, suggested_code="GIFT", suggested_name="선물비"))
     svc = TransactionService(db=db_session, llm_recommender=rec, policy_service=make_policy())
 
@@ -49,7 +73,8 @@ def test_batch_persists_offlist_suggestions(db_session, tenant, make_recommender
 
 
 def test_batch_llm_match_persists_without_suggestion(db_session, tenant, make_recommender, make_policy):
-    # 콜드스타트(규칙 0개) -> DEFAULT_CATEGORIES 주입, selection=1 -> MEAL/식대 채택.
+    # 등록된 룰에서 추출한 후보([MEAL/식대]) 중 selection=1 -> MEAL/식대 채택.
+    _seed_meal_rule(db_session, tenant)
     rec = make_recommender(LLMSelection(selection=1))
     policy = make_policy(is_compliant=True)
     svc = TransactionService(db=db_session, llm_recommender=rec, policy_service=policy)
@@ -71,6 +96,7 @@ def test_batch_llm_match_persists_without_suggestion(db_session, tenant, make_re
 def test_single_test_does_not_persist_but_logs(
     db_session, tenant, make_recommender, make_policy, payload_factory, caplog
 ):
+    _seed_meal_rule(db_session, tenant)
     rec = make_recommender(LLMSelection(selection=0, suggested_code="GIFT", suggested_name="선물비"))
     svc = TransactionService(db=db_session, llm_recommender=rec, policy_service=make_policy())
 
@@ -91,6 +117,7 @@ def test_single_test_llm_match_emits_no_offlist_log(
     db_session, tenant, make_recommender, make_policy, payload_factory, caplog
 ):
     # 정상 LLM 매칭(selection=1)은 off-list 제안 로그를 남기지 않아야 한다.
+    _seed_meal_rule(db_session, tenant)
     rec = make_recommender(LLMSelection(selection=1))
     svc = TransactionService(db=db_session, llm_recommender=rec, policy_service=make_policy())
 

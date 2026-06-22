@@ -21,6 +21,7 @@ export interface RecommendResponse {
   result_category: string;
   applied_rule_id: number | null;
   match_type: "RULE" | "HISTORY" | "LLM" | "NONE";
+  message: string | null;
   is_compliant: boolean;
   violation_reason: string | null;
   explanation_status: string | null;
@@ -80,6 +81,16 @@ export interface RuleResponse extends RuleRequest {
   id: number;
   company_id: string;
   workplace_id: string | null;
+}
+
+// 규칙 일괄 등록(온보딩/시드)
+export interface RuleBulkCreateRequest {
+  rules: RuleRequest[];
+}
+
+export interface RuleBulkCreateResponse {
+  created_count: number;
+  rules: RuleResponse[];
 }
 
 // ---------------------------------------------------------------------------- //

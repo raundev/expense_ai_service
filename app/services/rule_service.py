@@ -46,6 +46,35 @@ class RuleService:
         return rule
 
     # ------------------------------------------------------------------ #
+    # Bulk Create (일괄 등록)
+    # ------------------------------------------------------------------ #
+    def create_rules_bulk(
+        self,
+        payloads: list[RuleRequest],
+        tenant: TenantContext,
+    ) -> list[ReceiptRule]:
+        """여러 규칙을 한 번에 등록(원자적). 신규 테넌트 온보딩/시드용.
+
+        단건 `create_rule` 과 동일하게 테넌트 식별자는 헤더(TenantContext)로 강제하며,
+        `add_all` + 단일 commit 으로 처리해 일부만 들어가는 부분 적재를 피한다
+        (하나라도 제약 위반이면 트랜잭션 전체가 롤백된다). 생성된 규칙은 입력 순서대로
+        반환하며, DB 가 채운 id 가 포함되도록 refresh 한다.
+        """
+        rules = [
+            ReceiptRule(
+                company_id=tenant.company_id,
+                workplace_id=tenant.workplace_id,
+                **payload.model_dump(),
+            )
+            for payload in payloads
+        ]
+        self.db.add_all(rules)
+        self.db.commit()
+        for rule in rules:
+            self.db.refresh(rule)
+        return rules
+
+    # ------------------------------------------------------------------ #
     # Update
     # ------------------------------------------------------------------ #
     def update_rule(

@@ -5,7 +5,12 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import TenantContext, get_tenant_info
 from app.db.session import get_db
-from app.schemas.rules import RuleRequest, RuleResponse
+from app.schemas.rules import (
+    RuleBulkCreateRequest,
+    RuleBulkCreateResponse,
+    RuleRequest,
+    RuleResponse,
+)
 from app.services.rule_service import RuleNotFoundError, RuleService
 
 router = APIRouter()
@@ -54,6 +59,33 @@ def create_rule(
     service = RuleService(db)
     rule = service.create_rule(payload, tenant)
     return RuleResponse.model_validate(rule)
+
+
+# ---------------------------------------------------------------------------- #
+# POST /bulk  — 규칙 일괄 등록 (온보딩/시드)
+# ---------------------------------------------------------------------------- #
+@router.post(
+    "/bulk",
+    response_model=RuleBulkCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+    summary="분류 규칙 일괄 등록",
+)
+def create_rules_bulk(
+    payload: RuleBulkCreateRequest,
+    tenant: Annotated[TenantContext, Depends(get_tenant_info)],
+    db: Annotated[Session, Depends(get_db)],
+) -> RuleBulkCreateResponse:
+    """여러 규칙을 한 번에 등록한다(원자적: 하나라도 실패하면 전체 롤백).
+
+    신규 테넌트 온보딩/시드 용도. `company_id` / `workplace_id` 는 요청 헤더에서
+    자동 주입되므로 각 항목 Body 에서 받지 않는다(단건 등록과 동일).
+    """
+    service = RuleService(db)
+    rules = service.create_rules_bulk(payload.rules, tenant)
+    return RuleBulkCreateResponse(
+        created_count=len(rules),
+        rules=[RuleResponse.model_validate(rule) for rule in rules],
+    )
 
 
 # ---------------------------------------------------------------------------- #

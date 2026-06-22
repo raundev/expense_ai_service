@@ -1,11 +1,22 @@
 import { useCallback, useEffect, useState } from "react";
-import { RefreshCw, Plus, Pencil, Loader2, Save, X } from "lucide-react";
+import { RefreshCw, Plus, Pencil, Loader2, Save, X, Upload } from "lucide-react";
 import { api, errMessage } from "../api";
-import type { RuleRequest, RuleResponse } from "../types";
+import type { RuleBulkCreateResponse, RuleRequest, RuleResponse } from "../types";
 
 const LIST_URL = "/api/v1/rules/";
 const CREATE_URL = "/api/v1/rules/create";
 const UPDATE_URL = (id: number) => `/api/v1/rules/update/${id}`;
+const BULK_URL = "/api/v1/rules/bulk";
+
+// 일괄 등록 붙여넣기 예시. 조건 키워드 1건 + 금액범위 1건의 최소 형태.
+const BULK_SAMPLE = JSON.stringify(
+  [
+    { rule_name: "식대(맥도날드)", condition_keyword: "맥도날드", category_code: "MEAL", result_category: "식대", priority: 0 },
+    { rule_name: "교통비(택시)", condition_keyword: "택시", category_code: "TRANSPORT", result_category: "교통비", priority: 1 },
+  ],
+  null,
+  2,
+);
 
 const EMPTY: RuleRequest = {
   rule_name: "",
@@ -30,6 +41,7 @@ export default function RulesPage() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState<{ type: "ok" | "err"; text: string } | null>(null);
   const [editing, setEditing] = useState<{ id: number | null; form: RuleRequest } | null>(null);
+  const [bulk, setBulk] = useState<{ text: string; busy: boolean } | null>(null);
 
   const refresh = useCallback(async () => {
     setLoading(true);
@@ -88,6 +100,37 @@ export default function RulesPage() {
     }
   };
 
+  // 일괄 등록: 텍스트(JSON 배열 또는 {rules:[...]})를 파싱해 POST /bulk.
+  const submitBulk = async () => {
+    if (!bulk) return;
+    setMsg(null);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(bulk.text);
+    } catch {
+      setMsg({ type: "err", text: "JSON 파싱 실패 — 형식을 확인하세요." });
+      return;
+    }
+    // 배열 그대로 또는 {rules:[...]} 객체 모두 허용한다.
+    const rules = Array.isArray(parsed)
+      ? parsed
+      : (parsed as { rules?: unknown }).rules;
+    if (!Array.isArray(rules) || rules.length === 0) {
+      setMsg({ type: "err", text: "규칙 배열이 비어 있습니다 (최소 1건 필요)." });
+      return;
+    }
+    setBulk({ ...bulk, busy: true });
+    try {
+      const { data } = await api.post<RuleBulkCreateResponse>(BULK_URL, { rules });
+      setMsg({ type: "ok", text: `규칙 ${data.created_count}건이 일괄 등록되었습니다.` });
+      setBulk(null);
+      await refresh();
+    } catch (e) {
+      setMsg({ type: "err", text: errMessage(e) });
+      setBulk((p) => (p ? { ...p, busy: false } : p));
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between">
@@ -103,6 +146,12 @@ export default function RulesPage() {
           >
             {loading ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
             새로고침
+          </button>
+          <button
+            onClick={() => setBulk({ text: "", busy: false })}
+            className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm px-3 py-1.5 rounded-md"
+          >
+            <Upload size={15} /> 일괄 등록
           </button>
           <button
             onClick={startCreate}
@@ -122,6 +171,47 @@ export default function RulesPage() {
           }`}
         >
           {msg.text}
+        </div>
+      )}
+
+      {bulk && (
+        <div className="bg-white border border-indigo-200 rounded-xl p-5 shadow-sm">
+          <div className="flex items-center justify-between mb-2">
+            <h2 className="font-semibold text-slate-700">규칙 일괄 등록</h2>
+            <button onClick={() => setBulk(null)} className="text-slate-400 hover:text-slate-600"><X size={18} /></button>
+          </div>
+          <p className="text-xs text-slate-500 mb-3">
+            규칙 객체 배열(JSON)을 붙여넣으세요. company_id/workplace_id 는 현재 테넌트로 자동 설정됩니다.
+            필수: <code className="font-mono">rule_name</code>, <code className="font-mono">category_code</code>, <code className="font-mono">result_category</code>.
+            하나라도 실패하면 전체가 등록되지 않습니다(원자적).
+          </p>
+          <textarea
+            className="w-full h-56 font-mono text-xs border border-slate-300 rounded-md px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400"
+            placeholder='[{"rule_name": "...", "category_code": "...", "result_category": "..."}]'
+            value={bulk.text}
+            onChange={(e) => setBulk((p) => (p ? { ...p, text: e.target.value } : p))}
+          />
+          <div className="flex gap-2 mt-3">
+            <button
+              onClick={submitBulk}
+              disabled={bulk.busy}
+              className="inline-flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm px-4 py-2 rounded-md"
+            >
+              {bulk.busy ? <Loader2 size={15} className="animate-spin" /> : <Upload size={15} />} 일괄 등록
+            </button>
+            <button
+              onClick={() => setBulk({ text: BULK_SAMPLE, busy: false })}
+              className="text-sm px-4 py-2 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50"
+            >
+              예시 채우기
+            </button>
+            <button
+              onClick={() => setBulk(null)}
+              className="text-sm px-4 py-2 rounded-md border border-slate-300 text-slate-600 hover:bg-slate-50"
+            >
+              취소
+            </button>
+          </div>
         </div>
       )}
 
