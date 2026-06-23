@@ -14,7 +14,12 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import TenantContext, get_tenant_info
 from app.db.session import get_db
-from app.schemas.chat import ChatHistoryResponse, ChatModelsResponse
+from app.schemas.chat import (
+    ChatHistoryResponse,
+    ChatModelsResponse,
+    ChatTranslateRequest,
+    ChatTranslateResponse,
+)
 from app.schemas.common import ApiResponse
 from app.schemas.policies import PolicyChatRequest, PolicyChatResponse
 from app.services.bot_service import BotDisabledError, BotNotFoundError
@@ -72,6 +77,35 @@ def get_chat_history(
     except ChatSessionNotFoundError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     return ApiResponse.ok(history)
+
+
+# ---------------------------------------------------------------------------- #
+# POST /chat/translate  — 소스(규정 원문) 온디맨드 번역
+# ---------------------------------------------------------------------------- #
+@router.post(
+    "/chat/translate",
+    response_model=ApiResponse[ChatTranslateResponse],
+    summary="소스 스니펫을 질문 언어로 번역 (테넌트/봇 격리)",
+)
+def translate_source(
+    payload: ChatTranslateRequest,
+    tenant: Annotated[TenantContext, Depends(get_tenant_info)],
+    service: Annotated[ChatService, Depends(get_chat_service)],
+) -> ApiResponse[ChatTranslateResponse]:
+    """소스 스니펫(규정 원문)을 reference_query 에 사용된 언어로 번역해 반환한다.
+
+    답변은 chat 단계에서 질문 언어로 생성되지만 소스는 원문(증빙) 그대로 노출되므로,
+    사용자가 '번역' 버튼을 누른 소스만 이 API 로 즉시 번역한다.
+    """
+    try:
+        translated = service.translate_text(
+            tenant, payload.bot_id, payload.text, payload.reference_query
+        )
+    except BotNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except BotDisabledError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    return ApiResponse.ok(ChatTranslateResponse(translated=translated))
 
 
 # ---------------------------------------------------------------------------- #

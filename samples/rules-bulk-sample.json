@@ -1,0 +1,109 @@
+{
+  "_comment": "규칙 일괄 등록(POST /api/v1/rules/bulk) 테스트 데이터. '룰 조회 > 일괄 등록' 패널에 통째로 붙여넣거나, 이 본문 그대로 API 로 전송한다. company_id/workplace_id 는 요청 헤더(X-Company-ID/X-Workplace-ID)로 자동 주입되므로 항목에 넣지 않는다. priority 는 낮을수록 먼저 적용된다.",
+  "rules": [
+    {
+      "rule_name": "식대 - 점심(키워드+시간대)",
+      "condition_keyword": "맥도날드",
+      "usage_time_band": "LUNCH",
+      "category_code": "MEAL",
+      "result_category": "식대",
+      "priority": 0
+    },
+    {
+      "rule_name": "식대 - 일반 식당(업종코드)",
+      "merchant_sector_code": "FOOD",
+      "merchant_sector_name": "음식점",
+      "condition_max_amount": 30000,
+      "category_code": "MEAL",
+      "result_category": "식대",
+      "priority": 10
+    },
+    {
+      "rule_name": "야근식대 - 저녁 시간대(평일)",
+      "usage_time_band": "DINNER",
+      "is_weekend": false,
+      "condition_max_amount": 15000,
+      "category_code": "MEAL_OT",
+      "result_category": "야근식대",
+      "priority": 5
+    },
+    {
+      "rule_name": "교통비 - 택시",
+      "condition_keyword": "택시",
+      "category_code": "TRANSPORT",
+      "result_category": "교통비",
+      "priority": 20
+    },
+    {
+      "rule_name": "교통비 - 카카오T",
+      "condition_keyword": "카카오모빌리티",
+      "category_code": "TRANSPORT",
+      "result_category": "교통비",
+      "priority": 21
+    },
+    {
+      "rule_name": "출장 항공(고액 + 업종)",
+      "merchant_sector_code": "AIRLINE",
+      "merchant_sector_name": "항공",
+      "condition_min_amount": 50000,
+      "category_code": "TRAVEL_AIR",
+      "result_category": "출장-항공",
+      "priority": 15
+    },
+    {
+      "rule_name": "숙박비 - 호텔",
+      "condition_keyword": "호텔",
+      "condition_min_amount": 30000,
+      "category_code": "LODGING",
+      "result_category": "숙박비",
+      "priority": 18
+    },
+    {
+      "rule_name": "접대비 - 주말 사용분",
+      "is_weekend": true,
+      "condition_min_amount": 50000,
+      "category_code": "ENTERTAIN",
+      "result_category": "접대비",
+      "priority": 8
+    },
+    {
+      "rule_name": "사무용품 - 문구",
+      "condition_keyword": "문구",
+      "merchant_sector_code": "OFFICE",
+      "category_code": "SUPPLIES",
+      "result_category": "사무용품비",
+      "priority": 30
+    },
+    {
+      "rule_name": "도서구입비",
+      "condition_keyword": "교보문고",
+      "category_code": "BOOK",
+      "result_category": "도서구입비",
+      "priority": 31
+    },
+    {
+      "rule_name": "통신비 - 법인폰",
+      "condition_keyword": "통신",
+      "card_company_code": "BC",
+      "category_code": "TELECOM",
+      "result_category": "통신비",
+      "priority": 25
+    },
+    {
+      "rule_name": "복리후생 - 경조사(휴일 포함)",
+      "condition_keyword": "화환",
+      "is_holiday": true,
+      "category_code": "WELFARE",
+      "result_category": "복리후생비",
+      "priority": 12
+    },
+    {
+      "rule_name": "[비활성] 구버전 주차비 규칙",
+      "condition_keyword": "주차",
+      "category_code": "PARKING",
+      "result_category": "주차비",
+      "priority": 99,
+      "is_active": false
+    }
+  ]
+}

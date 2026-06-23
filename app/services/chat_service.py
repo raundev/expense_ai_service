@@ -47,6 +47,30 @@ _HISTORY_ONLY_SYSTEM = """당신은 회사 규정 챗봇입니다. 아래 '이�
 사용자의 요청(요약/번역/형식변환 등)을 수행하세요. 이전 대화에 없는 새로운 사실을 지어내지 마세요.
 사용자가 번역 등 다른 언어를 명시적으로 요청한 경우가 아니라면, 사용자의 질문에 사용된 언어와 동일한 언어로 답변하세요."""
 
+# 소스(규정 원문) 온디맨드 번역용 — '대상 언어'(코드에서 판정) 로 '원문' 을 옮긴다.
+# 목표 언어를 LLM 추론에 맡기면 Qwen(중국계)이 짧은 한자 질문을 중국어로 오판하는 사례가 있어,
+# 호출부에서 유니코드 스크립트로 언어를 먼저 판정해 명시적으로 지정한다.
+# 다만 목표 언어를 지정해도 Qwen 은 (특히 원문이 한국어 규정처럼 길 때) 기본 언어인
+# 중국어로 출력해 버리는 편향이 있어, 시스템/휴먼 프롬프트 양쪽에서 출력 언어를 절대 조건으로
+# 강하게 못 박고, 엔도님(日本語/中文 등)·영어명까지 함께 제시해 모델이 확실히 인지하게 한다.
+_TRANSLATE_SYSTEM = """당신은 사내 규정 문서를 번역하는 전문 번역기입니다.
+가장 중요한 규칙: 사용자가 지정한 '출력 언어' 로만 번역해 출력하세요. 이 지시는 절대적입니다.
+- 원문이 어떤 언어이든, 그리고 당신의 기본 언어(중국어 등)가 무엇이든 상관없이, 오직 지정된
+  출력 언어만 사용하세요. 다른 언어(특히 중국어)로 바꿔서 출력하면 안 됩니다.
+- 의미를 그대로 보존하고, 규정 용어·수치·조항 번호는 정확히 옮기세요.
+- 내용을 요약하거나 새로운 정보를 덧붙이지 마세요.
+- 원문이 이미 출력 언어와 같으면 원문을 그대로 반환하세요.
+- 번역 결과 텍스트만 출력하고, 머리말·설명·따옴표를 붙이지 마세요."""
+
+# 코드 판정 라벨(한국어) -> (엔도님, 영어명). 프롬프트에 셋 다 노출해 Qwen 이 출력 언어를
+# 오인하지 않게 한다(예: '일본어' 만으로는 약해, '日本語'·'Japanese' 를 함께 제시).
+_LANG_NAMES: dict[str, tuple[str, str]] = {
+    "일본어": ("日本語", "Japanese"),
+    "한국어": ("한국어", "Korean"),
+    "중국어": ("中文", "Chinese"),
+    "영어": ("English", "English"),
+}
+
 
 def build_chat_llm(*, model: str, temperature: float, max_tokens: int | None = None):
     """봇 설정(model/temperature/max_tokens)으로 ChatOpenAI 구성.
@@ -376,6 +400,58 @@ class ChatService:
         self.db.refresh(session)
 
         return {"answer": answer, "session_id": session.id, "sources": sources}
+
+    # ------------------------------------------------------------------ #
+    # Translate (소스 온디맨드 번역)
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _detect_target_language(text: str) -> str:
+        """질문 텍스트의 주 언어를 유니코드 스크립트로 판정해 한국어 라벨로 반환.
+
+        목표 언어를 LLM 추론에 맡기면 Qwen 이 일본어(한자 위주 짧은 문장)를 중국어로
+        오판하는 사례가 있어, 가나/한글 등 '명확한 신호' 를 우선으로 결정론적으로 고른다:
+          - 히라가나·가타카나(0x3040~0x30FF) 가 하나라도 있으면 → 일본어
+          - 한글 음절(0xAC00~0xD7A3) 이 하나라도 있으면 → 한국어
+          - 위가 없고 CJK 한자(0x4E00~0x9FFF) 가 있으면 → 중국어
+          - 그 외(라틴 등) → 영어
+        """
+        has_cjk = False
+        for ch in text:
+            o = ord(ch)
+            if 0x3040 <= o <= 0x30FF:  # 가나 → 일본어 확정
+                return "일본어"
+            if 0xAC00 <= o <= 0xD7A3:  # 한글 → 한국어 확정
+                return "한국어"
+            if 0x4E00 <= o <= 0x9FFF:  # 한자(가나/한글 없을 때만 중국어로 판정)
+                has_cjk = True
+        return "중국어" if has_cjk else "영어"
+
+    def translate_text(
+        self, tenant: TenantContext, bot_id: str, text: str, reference_query: str
+    ) -> str:
+        """소스 스니펫(규정 원문)을 `reference_query` 의 언어로 번역한다.
+
+        봇 LLM/테넌트 격리를 위해 봇을 먼저 검증한다(없으면 404, disabled 면 409).
+        목표 언어는 `_detect_target_language` 로 코드에서 결정해 프롬프트에 명시한다.
+        LLM 응답이 비면 원문을 그대로 돌려 안전하게 폴백한다(번역 실패가 빈 화면으로
+        이어지지 않도록).
+        """
+        bot = self._get_active_bot(bot_id, tenant)
+        target_language = self._detect_target_language(reference_query)
+        endonym, english = _LANG_NAMES.get(
+            target_language, (target_language, target_language)
+        )
+        # 출력 언어를 상단·하단에서 두 번(엔도님/영어명 포함) 못 박아 Qwen 의 중국어 편향을 억제.
+        human = (
+            f"[출력 언어] 반드시 {target_language}({endonym}, {english}) 로만 번역해 출력하세요.\n"
+            f"원문이 한국어/중국어 등 무엇이든, 출력은 오직 {english}({endonym}) 여야 합니다.\n\n"
+            f"원문:\n{text}\n\n"
+            f"위 원문을 {target_language}({endonym})(으)로 번역한 결과만 출력하세요."
+        )
+        resp = self._llm_for(bot).invoke(
+            [("system", _TRANSLATE_SYSTEM), ("human", human)]
+        )
+        return (getattr(resp, "content", "") or "").strip() or text
 
     # ------------------------------------------------------------------ #
     # History 조회 (§5.1)

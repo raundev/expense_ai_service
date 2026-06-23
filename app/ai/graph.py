@@ -10,6 +10,7 @@ END 로 바로 가지 않고 반드시 `compliance` 노드를 거쳐, 사칙 위
       ┌──────┐  RULE 매칭     ┌────────────┐
       │ rule │ ────────────► │            │
       └──┬───┘                │            │
+         │ 활성 규칙 0개(NO_RULE) ─────────────► END  (추천 불가 -- 관리자 문의 안내)
          │ miss               │            │
          ▼                    │            │
       ┌─────────┐ HISTORY 매칭 │ compliance │ ──► END
@@ -33,7 +34,6 @@ from langgraph.graph import END, START, StateGraph
 from sqlalchemy.orm import Session
 
 from app.ai.llm_recommender import (
-    DEFAULT_CATEGORIES,
     TOP_N_CANDIDATES,
     CategoryCandidate,
     ReceiptLLMRecommender,
@@ -83,6 +83,9 @@ class TransactionState(TypedDict, total=False):
     result_category: str
     applied_rule_id: int | None
 
+    # 분류 실패(NONE) 시 사용자에게 보여줄 안내 사유. 성공 경로에서는 채우지 않는다.
+    message: str | None
+
     # LLM off-list 자유 제안 (selection=0 일 때만 채워짐; 배치 적재/단건 로깅에 사용)
     llm_suggested_code: str | None
     llm_suggested_name: str | None
@@ -94,10 +97,22 @@ class TransactionState(TypedDict, total=False):
 
 
 # ---------------------------------------------------------------------------- #
+# 분류 실패(NONE) 안내 메시지
+# ---------------------------------------------------------------------------- #
+# 테넌트에 활성 규칙이 0개라 추천 자체가 불가한 경우.
+NO_RULE_MESSAGE = "등록된 룰이 없습니다. 관리자에게 문의하세요."
+# 활성 규칙은 있으나, 그 어느 규칙도 합당한 용도로 채택되지 못한 경우.
+NO_RECOMMENDATION_MESSAGE = "추천할 용도가 존재하지 않습니다."
+
+
+# ---------------------------------------------------------------------------- #
 # Nodes
 # ---------------------------------------------------------------------------- #
 def rule_node(state: TransactionState) -> dict:
     """1차 RULE 매칭. 활성 규칙을 priority ASC 로 가져와 첫 매칭을 채택.
+
+    활성 규칙이 **0개** 이면 추천을 시도하지 않고 즉시 NONE(NO_RULE)으로 종료한다
+    (등록된 룰이 없으면 LLM 콜드스타트 기본값으로 추측하지 않는다 -- '관리자 문의' 안내).
 
     미매칭 시에는 3차 LLM fallback 을 위한 용도 후보군을 활성 규칙에서 추출해 넘긴다:
     `collapse_rules_to_candidates` 로 distinct-collapse + min_priority 정렬 후 Top-N 으로
@@ -108,6 +123,10 @@ def rule_node(state: TransactionState) -> dict:
     tenant = state["tenant"]
 
     active_rules = RuleService(db).get_active_rules(tenant)
+    if not active_rules:
+        # 등록된 활성 규칙이 전혀 없음 -- 추천 불가, 관리자 문의 안내로 그래프를 닫는다.
+        return _no_active_rule()
+
     for rule in active_rules:
         if rule_matches(rule, payload):
             return {
@@ -149,30 +168,48 @@ def history_node(state: TransactionState) -> dict:
     return {}
 
 
+def _no_active_rule() -> dict:
+    """활성 규칙이 0개라 추천 자체가 불가한 경우의 최종 NONE 결과(컴플라이언스 생략)."""
+    return {
+        "match_type": "NONE",
+        "category_code": "NO_RULE",
+        "result_category": "미분류",
+        "applied_rule_id": None,
+        "message": NO_RULE_MESSAGE,
+    }
+
+
 def _unclassified() -> dict:
-    """LLM 으로도 분류 실패 시의 최종 NONE 결과(컴플라이언스 생략)."""
+    """등록된 룰 중 합당한 용도를 찾지 못한 경우의 최종 NONE 결과(컴플라이언스 생략)."""
     return {
         "match_type": "NONE",
         "category_code": "UNCLASSIFIED",
         "result_category": "미분류",
         "applied_rule_id": None,
+        "message": NO_RECOMMENDATION_MESSAGE,
     }
 
 
 def llm_node(state: TransactionState) -> dict:
     """3차 LLM 추론(번호 선택). 실패/off-list 시 최종 NONE 으로 그래프를 닫는다.
 
-    * 후보군이 비어 있으면(콜드스타트) `DEFAULT_CATEGORIES` 를 주입해 동일한 번호 선택을 탄다.
-    * selection > 0  : 주입된 후보 목록의 해당 항목을 채택 -> match_type="LLM".
-    * selection == 0 : off-list -> match_type="NONE" 으로 컴플라이언스를 건너뛰고,
-                       LLM 의 자유 제안(suggested_code/name)을 state 에 담아 넘긴다.
+    LLM 은 **그 테넌트에 등록된 규칙에서 추출한 후보 목록 안에서만** 번호를 고른다.
+    (전역 기본값 콜드스타트는 폐지 -- 등록된 룰이 없거나 후보를 못 만들면 추측하지 않는다.)
+
+    * selection > 0  : 등록된 룰 후보 중 해당 항목을 채택 -> match_type="LLM".
+    * selection == 0 : 합당한 후보 없음 -> match_type="NONE"('추천 용도 없음') 으로
+                       컴플라이언스를 건너뛰고, LLM 의 자유 제안(suggested_code/name)은
+                       데이터 플라이휠용으로만 state 에 담는다(응답엔 노출하지 않음).
     * 비활성/호출 실패: 분류 불가 -> match_type="NONE" (제안값 없음).
     """
     payload = state["payload"]
     llm_recommender = state["llm_recommender"]
 
-    # 콜드스타트 통일: 후보군이 없으면 전역 기본값을 주입(자유 텍스트 모드로 분기하지 않음).
-    candidates = state.get("category_candidates") or DEFAULT_CATEGORIES
+    # rule_node 가 활성 규칙 0개를 이미 NO_RULE 로 걸러내므로, 여기 도달 시 후보가 있어야 정상.
+    # 방어적으로 후보가 비면 추측하지 않고 '추천 용도 없음(NONE)' 으로 닫는다.
+    candidates = state.get("category_candidates")
+    if not candidates:
+        return _unclassified()
 
     selection = llm_recommender.select(payload, candidates)
     if selection is None:
@@ -249,8 +286,14 @@ def compliance_node(state: TransactionState) -> dict:
 # Routers (conditional edges)
 # ---------------------------------------------------------------------------- #
 def _route_after_rule(state: TransactionState) -> str:
+    match = state.get("match_type")
     # 매칭 성공 시 바로 END 가 아니라 compliance 를 거친다.
-    return "compliance" if state.get("match_type") == "RULE" else "history"
+    if match == "RULE":
+        return "compliance"
+    # 활성 규칙 0개(NO_RULE) -> history/llm 을 타지 않고 즉시 종료.
+    if match == "NONE":
+        return "end"
+    return "history"
 
 
 def _route_after_history(state: TransactionState) -> str:
@@ -277,7 +320,7 @@ def compile_recommendation_graph():
     workflow.add_conditional_edges(
         "rule",
         _route_after_rule,
-        {"history": "history", "compliance": "compliance"},
+        {"history": "history", "compliance": "compliance", "end": END},
     )
     workflow.add_conditional_edges(
         "history",

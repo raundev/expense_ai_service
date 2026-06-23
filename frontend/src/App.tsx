@@ -1,75 +1,44 @@
-import { useState, type ReactNode } from "react";
-import { Receipt, LayoutDashboard } from "lucide-react";
-import SettingsPanel from "./components/SettingsPanel";
-import SingleRecommendTab from "./components/SingleRecommendTab";
-import ComplianceTab from "./components/ComplianceTab";
-import { loadSettings, saveSettings, type Settings } from "./api";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { hasTenant } from "./api";
+import EntryGate from "./components/EntryGate";
+import ConsoleLayout from "./components/ConsoleLayout";
+import ReceiptsPage from "./pages/ReceiptsPage";
+import RulesPage from "./pages/RulesPage";
+import RagPage from "./pages/RagPage";
+import DocumentsPage from "./pages/DocumentsPage";
+import ComplianceAdminPage from "./pages/ComplianceAdminPage";
+import AdminPage from "./pages/AdminPage";
 
-type Tab = "single" | "compliance";
-
-export default function App() {
-  const [settings, setSettings] = useState<Settings>(() => loadSettings());
-  const [tab, setTab] = useState<Tab>("single");
-
-  const update = (patch: Partial<Settings>) => {
-    setSettings((prev) => {
-      const next = { ...prev, ...patch };
-      saveSettings(next);
-      return next;
-    });
-  };
-
-  return (
-    <div className="min-h-full">
-      <header className="bg-slate-900 text-white">
-        <div className="max-w-6xl mx-auto px-4 py-4">
-          <h1 className="text-lg font-bold">Bizplay AI · 컴플라이언스 테스트 콘솔</h1>
-          <p className="text-slate-400 text-xs">
-            영수증 추천 + RAG 컴플라이언스 감사 API 통합 테스트 (Phase 1)
-          </p>
-        </div>
-      </header>
-
-      <main className="max-w-6xl mx-auto px-4 py-6 space-y-6">
-        <SettingsPanel settings={settings} onChange={update} />
-
-        <div className="flex gap-1 border-b border-slate-200">
-          <TabButton active={tab === "single"} onClick={() => setTab("single")} icon={<Receipt size={16} />}>
-            단건 추천 &amp; 감사
-          </TabButton>
-          <TabButton active={tab === "compliance"} onClick={() => setTab("compliance")} icon={<LayoutDashboard size={16} />}>
-            컴플라이언스 대시보드
-          </TabButton>
-        </div>
-
-        {tab === "single" ? <SingleRecommendTab /> : <ComplianceTab />}
-      </main>
-    </div>
-  );
+// 테넌트(회사/사업장) 미설정 시 진입 게이트로 돌려보내는 가드.
+function RequireTenant({ children }: { children: JSX.Element }) {
+  return hasTenant() ? children : <Navigate to="/" replace />;
 }
 
-function TabButton({
-  active,
-  onClick,
-  icon,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: ReactNode;
-  children: ReactNode;
-}) {
+export default function App() {
   return (
-    <button
-      onClick={onClick}
-      className={`inline-flex items-center gap-2 px-4 py-2 text-sm font-medium border-b-2 -mb-px transition-colors ${
-        active
-          ? "border-blue-600 text-blue-700"
-          : "border-transparent text-slate-500 hover:text-slate-700"
-      }`}
-    >
-      {icon}
-      {children}
-    </button>
+    <Routes>
+      {/* 진입 페이지: 테넌트 정보(회사/사업장) 기준으로 콘솔에 진입 */}
+      <Route path="/" element={<EntryGate />} />
+
+      {/* 콘솔: 6개 메뉴. 테넌트 미설정이면 진입 게이트로 리다이렉트 */}
+      <Route
+        path="/console"
+        element={
+          <RequireTenant>
+            <ConsoleLayout />
+          </RequireTenant>
+        }
+      >
+        <Route index element={<Navigate to="receipts" replace />} />
+        <Route path="receipts" element={<ReceiptsPage />} />
+        <Route path="rules" element={<RulesPage />} />
+        <Route path="rag" element={<RagPage />} />
+        <Route path="documents" element={<DocumentsPage />} />
+        <Route path="compliance" element={<ComplianceAdminPage />} />
+        <Route path="admin" element={<AdminPage />} />
+      </Route>
+
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }

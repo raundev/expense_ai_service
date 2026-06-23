@@ -1,0 +1,77 @@
+# Doc-Gardening & Code GC — 엔트로피 관리 루프.
+#
+# 문서↔코드 드리프트를 주기적으로 점검하고, (apply 모드일 때) 동기화 PR 을 연다.
+# 안전 원칙: 자동 머지 없음. schedule 은 report-only(요약만), PR 생성은 수동 apply.
+#
+# 운영: docs/references/agent-operating-manual.md, scripts/gardening/README.md
+
+name: Doc Gardening
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "report(점검만) | apply(재생성 후 PR 생성)"
+        required: true
+        default: "report"
+        type: choice
+        options: ["report", "apply"]
+  schedule:
+    - cron: "0 0 * * 1"   # 매주 월요일 00:00 UTC — report-only
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  garden:
+    name: drift check → (apply ? sync PR)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: 드리프트 점검 (report-only)
+        shell: pwsh
+        env:
+          ENVIRONMENT: ci
+        run: |
+          ./scripts/gardening/doc-drift-check.ps1 | Tee-Object -FilePath gardening-report.txt
+          "## 🌿 Doc-Gardening 결과" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          Get-Content gardening-report.txt | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+
+      - name: 생성물 재생성 + 동기화 PR (mode=apply 일 때만)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'apply' }}
+        shell: bash
+        env:
+          ENVIRONMENT: ci
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          python scripts/gardening/gen-db-schema.py
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "동기화할 드리프트 없음 — PR 생략."; exit 0
+          fi
+          BRANCH="agent/gardening-$(date +%Y%m%d-%H%M%S)"
+          git config user.name  "doc-gardener"
+          git config user.email "doc-gardener@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add -A
+          git commit -m "docs(gardening): 생성물·문서 드리프트 동기화"
+          git push origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" \
+            --title "docs(gardening): 드리프트 동기화" \
+            --body "doc-gardening 이 코드와 문서를 맞춘 PR. **자동 머지 없음** — 사람 리뷰 필요."

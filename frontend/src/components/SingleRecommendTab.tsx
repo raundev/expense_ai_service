@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { PlayCircle, ShieldCheck, ShieldAlert, Loader2 } from "lucide-react";
-import { api, errMessage } from "../api";
+import { PlayCircle, ShieldCheck, ShieldAlert, AlertCircle, Loader2 } from "lucide-react";
+import { api, errMessage, LLM_TIMEOUT_MS } from "../api";
 import type { RecommendResponse } from "../types";
 
 const ENDPOINT = "/api/v1/transactions/test-single-transaction/create";
@@ -35,14 +35,18 @@ export default function SingleRecommendTab() {
     setError(null);
     setResult(null);
     try {
-      const { data } = await api.post<RecommendResponse>(ENDPOINT, {
-        merchant_name: form.merchant_name,
-        amount: Number(form.amount),
-        receipt_date: form.receipt_date,
-        receipt_time: form.receipt_time,
-        department: form.department || null,
-        employee_id: form.employee_id || null,
-      });
+      const { data } = await api.post<RecommendResponse>(
+        ENDPOINT,
+        {
+          merchant_name: form.merchant_name,
+          amount: Number(form.amount),
+          receipt_date: form.receipt_date,
+          receipt_time: form.receipt_time,
+          department: form.department || null,
+          employee_id: form.employee_id || null,
+        },
+        { timeout: LLM_TIMEOUT_MS } // LLM(RunPod) 폴백 호출 시 최대 150초까지 대기
+      );
       setResult(data);
     } catch (e) {
       setError(errMessage(e));
@@ -98,16 +102,24 @@ export default function SingleRecommendTab() {
         {!error && !result && <p className="text-sm text-slate-400">실행 버튼을 눌러 결과를 확인하세요.</p>}
         {result && (
           <div className="space-y-3">
-            <div
-              className={`flex items-center gap-2 rounded-lg p-3 text-sm font-semibold ${
-                result.is_compliant
-                  ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
-                  : "bg-red-50 text-red-700 border border-red-200"
-              }`}
-            >
-              {result.is_compliant ? <ShieldCheck size={18} /> : <ShieldAlert size={18} />}
-              {result.is_compliant ? "규정 준수 (Compliant)" : "규정 위반 (Violation)"}
-            </div>
+            {result.match_type === "NONE" ? (
+              // 분류 실패(NONE): 룰 미존재/추천 용도 없음 안내. 컴플라이언스 배너는 의미가 없다.
+              <div className="flex items-center gap-2 rounded-lg p-3 text-sm font-semibold bg-amber-50 text-amber-700 border border-amber-200">
+                <AlertCircle size={18} />
+                {result.message ?? "추천할 용도가 존재하지 않습니다."}
+              </div>
+            ) : (
+              <div
+                className={`flex items-center gap-2 rounded-lg p-3 text-sm font-semibold ${
+                  result.is_compliant
+                    ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                    : "bg-red-50 text-red-700 border border-red-200"
+                }`}
+              >
+                {result.is_compliant ? <ShieldCheck size={18} /> : <ShieldAlert size={18} />}
+                {result.is_compliant ? "규정 준수 (Compliant)" : "규정 위반 (Violation)"}
+              </div>
+            )}
             <dl className="grid grid-cols-2 gap-x-4 gap-y-2 text-sm">
               <Field label="추천 용도" value={result.result_category} />
               <Field label="용도 코드" value={result.category_code} />

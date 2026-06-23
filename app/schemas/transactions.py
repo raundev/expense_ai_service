@@ -66,6 +66,11 @@ class RecommendResponse(ComplianceFields):
     result_category: str = Field(..., description="용도명")
     applied_rule_id: int | None = Field(default=None, description="매칭된 ReceiptRule.id (RULE 일 때만)")
     match_type: MatchType = Field(..., description="매칭 출처: RULE/HISTORY/LLM/NONE")
+    message: str | None = Field(
+        default=None,
+        description="분류 실패(NONE) 시 사용자 안내 사유. 등록된 룰이 없으면 '관리자 문의', "
+        "합당한 룰이 없으면 '추천 용도 없음'. 성공(RULE/HISTORY/LLM) 시 None.",
+    )
 
 
 # ---------------------------------------------------------------------------- #

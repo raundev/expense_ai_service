@@ -3,9 +3,13 @@ from __future__ import annotations
 
 import logging
 
-from app.ai.graph import llm_node, rule_node
+from app.ai.graph import (
+    NO_RECOMMENDATION_MESSAGE,
+    NO_RULE_MESSAGE,
+    llm_node,
+    rule_node,
+)
 from app.ai.llm_recommender import (
-    DEFAULT_CATEGORIES,
     TOP_N_CANDIDATES,
     CategoryCandidate,
     LLMSelection,
@@ -110,11 +114,15 @@ def test_rule_node_truncates_to_top_n_and_warns(db_session, tenant, payload_fact
     )
 
 
-def test_rule_node_no_rules_returns_empty_candidates(db_session, tenant, payload_factory):
+def test_rule_node_no_rules_returns_none_with_admin_message(db_session, tenant, payload_factory):
+    # 활성 규칙이 0개면 후보를 만들지 않고 즉시 NONE(NO_RULE) + 관리자 문의 안내로 종료한다.
     out = rule_node(
         {"db_session": db_session, "payload": payload_factory(), "tenant": tenant}
     )
-    assert out == {"category_candidates": []}
+    assert out["match_type"] == "NONE"
+    assert out["category_code"] == "NO_RULE"
+    assert out["message"] == NO_RULE_MESSAGE
+    assert "category_candidates" not in out  # LLM 후보군을 만들지 않는다
 
 
 # ---------------------------------------------------------------------------- #
@@ -141,27 +149,29 @@ def test_llm_node_offlist_sets_none_with_suggestions(payload_factory):
     assert out["match_type"] == "NONE"
     assert out["category_code"] == "UNCLASSIFIED"
     assert out["result_category"] == "미분류"
-    assert out["llm_suggested_code"] == "GIFT"
+    assert out["message"] == NO_RECOMMENDATION_MESSAGE
+    assert out["llm_suggested_code"] == "GIFT"  # 데이터 플라이휠용 제안은 계속 보존
     assert out["llm_suggested_name"] == "선물비"
 
 
-def test_llm_node_cold_start_injects_default_categories(payload_factory):
+def test_llm_node_no_candidates_returns_none_without_calling_llm(payload_factory):
+    # 후보군 미설정 -> 콜드스타트 기본값을 주입하지 않고 '추천 용도 없음(NONE)' 으로 닫는다.
     rec = _Rec(LLMSelection(selection=1))
-    # category_candidates 미설정 -> DEFAULT_CATEGORIES 주입되어야 한다.
     out = llm_node({"payload": payload_factory(), "llm_recommender": rec})
-    assert rec.seen == DEFAULT_CATEGORIES
-    assert out["match_type"] == "LLM"
-    assert out["category_code"] == DEFAULT_CATEGORIES[0].code
-    assert out["result_category"] == DEFAULT_CATEGORIES[0].name
+    assert rec.seen is None  # LLM 을 아예 호출하지 않는다(룰 없이 추측 금지)
+    assert out["match_type"] == "NONE"
+    assert out["category_code"] == "UNCLASSIFIED"
+    assert out["message"] == NO_RECOMMENDATION_MESSAGE
 
 
-def test_llm_node_empty_candidates_injects_default_categories(payload_factory):
+def test_llm_node_empty_candidates_returns_none_without_calling_llm(payload_factory):
     rec = _Rec(LLMSelection(selection=1))
     out = llm_node(
         {"payload": payload_factory(), "llm_recommender": rec, "category_candidates": []}
     )
-    assert rec.seen == DEFAULT_CATEGORIES
-    assert out["match_type"] == "LLM"
+    assert rec.seen is None
+    assert out["match_type"] == "NONE"
+    assert out["category_code"] == "UNCLASSIFIED"
 
 
 def test_llm_node_disabled_recommender_returns_none(payload_factory):

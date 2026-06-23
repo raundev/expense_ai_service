@@ -238,3 +238,7 @@ code_context_for_gemini.txt
 
 # Node.js (frontend)
 node_modules/
+
+# 에이전트 하네스 산출물(UI 스냅샷·DOM 덤프 등) — .gitkeep 만 추적
+.agent-artifacts/*
+!.agent-artifacts/.gitkeep

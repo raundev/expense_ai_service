@@ -1,0 +1,70 @@
+# 에이전트 리뷰어 — 자율 PR 루프의 피드백 절반.
+#
+# 안전 원칙:
+#   - **코멘트만** 단다. 승인/머지/푸시 없음(권한도 pull-requests: write 만).
+#   - ANTHROPIC_API_KEY 가 없으면 조용히 skip(포크 PR·시크릿 미설정 시 실패 방지).
+#   - 에이전트 리뷰 생성 단계는 placeholder(DEBT-5). 현재는 황금 원칙 정적 점검 결과를 코멘트.
+#
+# 라이프사이클: agent-pr-loop 가 PR 을 열면 → 이 워크플로가 리뷰 코멘트 → 사람/에이전트가 반영.
+# 운영 가이드: docs/references/agent-operating-manual.md
+
+name: Agent Reviewer
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "리뷰할 PR 번호"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write   # 코멘트 작성(머지/승인 아님)
+
+jobs:
+  review:
+    name: golden-principles + agent review (comment-only)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 황금 원칙 정적 점검 (pwsh)
+        shell: pwsh
+        run: |
+          ./scripts/gardening/golden-principles-check.ps1 -OutFile review-notes.md
+          # report-only: 위반이 있어도 워크플로를 실패시키지 않는다(코멘트로만 알림).
+
+      - name: 에이전트 리뷰 생성 (PLACEHOLDER — 결선 필요)
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "ANTHROPIC_API_KEY 미설정 — LLM 리뷰 skip, 정적 점검 결과만 코멘트."
+          else
+            echo "TODO(DEBT-5): diff 를 에이전트에 보내 리뷰 코멘트를 review-notes.md 에 추가."
+          fi
+
+      - name: PR 에 코멘트
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          {
+            echo "## 🤖 Agent Reviewer (comment-only)"
+            echo ""
+            echo "> 자동 리뷰입니다. 머지/승인은 사람이 합니다."
+            echo ""
+            cat review-notes.md 2>/dev/null || echo "_점검 결과 없음._"
+          } > comment.md
+          gh pr comment "${{ github.event.pull_request.number }}" --body-file comment.md

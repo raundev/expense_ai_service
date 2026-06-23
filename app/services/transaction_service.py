@@ -102,6 +102,8 @@ class TransactionService:
             result_category=final_state["result_category"],
             applied_rule_id=final_state.get("applied_rule_id"),
             match_type=final_state["match_type"],
+            # 분류 실패(NONE) 안내 사유. 성공 경로에서는 None.
+            message=final_state.get("message"),
             # compliance 노드를 거치지 않은 경로(NONE)는 기본 준수(True)로 본다.
             is_compliant=final_state.get("is_compliant", True),
             violation_reason=final_state.get("violation_reason"),
